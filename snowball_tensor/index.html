@@ -1,0 +1,835 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snowball Tensor Fight</title>
+<style>
+  :root {
+    --bg: #10002B; --card: #1D0042; --pink: #F050F8; --cyan: #00F0FF; --text: #FFFFFF;
+    --muted: #B9A6E0; --line: #3B1670;
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #wrap { position: relative; width: 100%; max-width: 760px; margin: 0 auto; }
+  canvas { display: block; width: 100%; height: auto; touch-action: none; user-select: none;
+    -webkit-user-select: none; border-radius: 18px; outline: none; }
+  #toast { position: absolute; left: 50%; top: 45.5%; transform: translate(-50%, -10px); opacity: 0;
+    background: rgba(29,0,66,.96); border: 1px solid var(--pink); color: var(--text);
+    padding: 10px 16px; border-radius: 999px; font-size: 14px; font-weight: 600;
+    box-shadow: 0 0 24px rgba(240,80,248,.45); transition: opacity .2s, transform .2s;
+    pointer-events: none; white-space: nowrap; max-width: 92%; overflow: hidden; text-overflow: ellipsis; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.cyan { border-color: var(--cyan); box-shadow: 0 0 24px rgba(0,240,255,.4); }
+  #win { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(16,0,43,.72); border-radius: 18px; backdrop-filter: blur(2px); }
+  #win.show { display: flex; }
+  .card { background: var(--card); border: 1px solid var(--pink); border-radius: 18px; padding: 22px 24px;
+    width: min(520px, 88%); box-shadow: 0 0 40px rgba(240,80,248,.35); text-align: center; }
+  .card .kicker { color: var(--cyan); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; font-weight: 700; }
+  .card h2 { margin: 6px 0 4px; font-size: 28px; color: var(--text); text-shadow: 0 0 18px rgba(240,80,248,.8); }
+  .card .stats { color: var(--muted); font-size: 14px; margin-bottom: 12px; }
+  .card pre { text-align: left; background: #10002B; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    color: var(--text); margin: 0 0 10px; user-select: text; -webkit-user-select: text; }
+  .card .recipe { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+    color: var(--muted); max-height: 92px; overflow: auto; margin: 0 0 12px; line-height: 1.55; }
+  .btns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .btn { border: 1px solid var(--cyan); background: transparent; color: var(--text); border-radius: 999px;
+    padding: 9px 16px; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; }
+  .btn.primary { background: var(--pink); border-color: var(--pink); color: #10002B; }
+  .btn:hover { filter: brightness(1.15); }
+  .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" tabindex="0" aria-label="Snowball Tensor Fight game board"></canvas>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="win" role="dialog" aria-modal="true" aria-labelledby="winTitle">
+    <div class="card">
+      <div class="kicker" id="winKicker">Board cleared!</div>
+      <h2 id="winTitle">Strassen Grandmaster</h2>
+      <div class="stats" id="winStats"></div>
+      <pre id="scorecard"></pre>
+      <div class="recipe" id="recipe"></div>
+      <div class="btns">
+        <button class="btn primary" id="copyBtn">📋 Copy Slack scorecard</button>
+        <button class="btn" id="againBtn">↺ Play again</button>
+        <button class="btn" id="peekBtn">👀 View board</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+"use strict";
+
+// ---------------------------------------------------------------- constants
+const W = 680, H = 660;
+const C = { bg: "#10002B", card: "#1D0042", card2: "#2A0B5C", pink: "#F050F8", cyan: "#00F0FF",
+            text: "#FFFFFF", muted: "#B9A6E0", line: "#3B1670", orange: "#FF8A3D", good: "#7CFFB2", bad: "#FF6B8B" };
+const FONT = 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const CHARGE_MS = 600, WEAK_MS = 150;
+
+// ---------------------------------------------------------------- canvas setup
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+let scale = 1, dpr = 1;
+function resize() {
+  const cssW = canvas.parentElement.clientWidth || W;
+  scale = cssW / W;
+  dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(W * scale * dpr);
+  canvas.height = Math.round(H * scale * dpr);
+  canvas.style.height = (H * scale) + "px";
+  sendHeight();
+}
+window.addEventListener("resize", resize);
+
+// ---------------------------------------------------------------- Streamlit protocol (no build step)
+function post(type, data) {
+  if (window.parent === window) return;
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
+}
+function sendHeight() { post("streamlit:setFrameHeight", { height: Math.ceil(H * scale) + 4 }); }
+let lastRenderArgsKey = null;
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (!d || d.type !== "streamlit:render") return;
+  const args = d.args || {};
+  const key = (args.level && args.level.id) + "|" + (args.reset_token || 0);
+  if (key !== lastRenderArgsKey) {
+    lastRenderArgsKey = key;
+    if (args.level) loadLevel(args.level);
+  }
+  sendHeight();
+});
+
+// ---------------------------------------------------------------- audio
+let actx = null, muted = false;
+function audio() {
+  if (muted) return null;
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { return null; } }
+  if (actx.state === "suspended") actx.resume();
+  return actx;
+}
+function tone(freq, dur, type = "sine", vol = 0.12, when = 0, slideTo = null) {
+  const a = audio(); if (!a) return;
+  const t0 = a.currentTime + when;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t0);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+}
+function noise(dur, freq, q = 1, vol = 0.18, when = 0, sweepTo = null) {
+  const a = audio(); if (!a) return;
+  const t0 = a.currentTime + when;
+  const len = Math.max(1, Math.floor(a.sampleRate * dur));
+  const buf = a.createBuffer(1, len, a.sampleRate), ch = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = a.createBufferSource(); src.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = "bandpass"; f.Q.value = q; f.frequency.setValueAtTime(freq, t0);
+  if (sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo, t0 + dur);
+  const g = a.createGain(); g.gain.value = vol;
+  src.connect(f).connect(g).connect(a.destination); src.start(t0);
+}
+const sfx = {
+  click: () => tone(880, 0.06, "triangle", 0.06),
+  whoosh: () => noise(0.35, 600, 0.8, 0.22, 0, 2400),
+  splat: (good) => { noise(0.12, good ? 1800 : 500, 1.2, 0.2); tone(good ? 160 : 110, 0.12, "sine", 0.1); },
+  chime: (n) => { const notes = [784, 880, 1047, 1175, 1319, 1568]; tone(notes[n % notes.length], 0.35, "triangle", 0.08); tone(notes[n % notes.length] * 2, 0.25, "sine", 0.03, 0.02); },
+  weak: () => tone(330, 0.35, "sine", 0.1, 0, 140),
+  error: () => { tone(220, 0.12, "square", 0.04); tone(180, 0.16, "square", 0.04, 0.1); },
+  undo: () => tone(520, 0.12, "triangle", 0.06, 0, 300),
+  win: () => { [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => { tone(f, 0.5, "triangle", 0.09, i * 0.09); tone(f * 2, 0.4, "sine", 0.025, i * 0.09 + 0.02); }); },
+};
+let hum = null;
+function humStart() {
+  const a = audio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = "sawtooth"; o.frequency.setValueAtTime(90, a.currentTime);
+  o.frequency.exponentialRampToValueAtTime(420, a.currentTime + CHARGE_MS / 1000);
+  const f = a.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 900;
+  g.gain.setValueAtTime(0.0001, a.currentTime); g.gain.exponentialRampToValueAtTime(0.05, a.currentTime + 0.1);
+  o.connect(f).connect(g).connect(a.destination); o.start();
+  hum = { o, g, a };
+}
+function humStop() {
+  if (!hum) return;
+  const { o, g, a } = hum; hum = null;
+  try { g.gain.cancelScheduledValues(a.currentTime); g.gain.setValueAtTime(g.gain.value, a.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + 0.06); o.stop(a.currentTime + 0.08); } catch (_) {}
+}
+
+// ---------------------------------------------------------------- game state
+let L = null;               // level definition
+let ni = 0, nj = 0, nk = 0;
+let T = null, shown = null; // logical tensor and what's currently drawn
+let start = null;
+let rowSel = [], colSel = [], laySel = [];
+let pol = 1;                // +1 snowball, -1 magma
+let history = [];           // {u,v,w,pol,before}
+let throws = 0, hintsUsed = 0;
+let timerStart = null, elapsedFinal = null;
+let won = false, charging = false, chargeStart = 0, chargeSource = null;
+let flights = [];           // snowballs in the air
+let particles = [], flakes = [];
+let shake = 0, bounce = 0, sadUntil = 0, cheerUntil = 0;
+let lay = null;             // layout
+let hits = [], hover = null;
+let mouse = { x: -1, y: -1 };
+let readyForInput = false;
+
+const clone3 = (t) => t.map(p => p.map(r => r.slice()));
+const zeros3 = () => Array.from({ length: ni }, () => Array.from({ length: nj }, () => Array(nk).fill(0)));
+const isClear = (t) => t.every(p => p.every(r => r.every(x => x === 0)));
+
+function loadLevel(level) {
+  L = level; ni = L.rows.length; nj = L.cols.length; nk = L.layers.length;
+  start = clone3(L.tensor);
+  lay = computeLayout();
+  resetLevel(true);
+  readyForInput = true;
+}
+function resetLevel(silent) {
+  T = clone3(start); shown = clone3(start);
+  rowSel = Array(ni).fill(0); colSel = Array(nj).fill(0); laySel = Array(nk).fill(0);
+  pol = 1; history = []; throws = 0; hintsUsed = 0; flights = [];
+  timerStart = null; elapsedFinal = null; won = false; charging = false;
+  document.getElementById("win").classList.remove("show");
+  if (!silent) { sfx.undo(); toast("Fresh snow! Board reset.", "cyan"); }
+}
+
+function computeLayout() {
+  const cs = ni >= 4 ? 32 : 54, gap = nk >= 4 ? 16 : 44;
+  const boardW = nj * cs, totalW = nk * boardW + (nk - 1) * gap;
+  const left = 88, avail = W - left - 14;
+  const x0 = left + Math.max(0, (avail - totalW) / 2);
+  const top = 108;
+  const boards = [];
+  for (let k = 0; k < nk; k++) boards.push({ x: x0 + k * (boardW + gap), y: top, w: boardW, h: ni * cs });
+  const bottom = top + ni * cs;
+  return { cs, gap, boardW, boards, top, bottom, x0, totalW,
+           colY: top - 30, layY: bottom + 10, formulaY: bottom + 58 };
+}
+const cellRect = (i, j, k) => { const b = lay.boards[k]; return { x: b.x + j * lay.cs, y: b.y + i * lay.cs, s: lay.cs }; };
+
+// ---------------------------------------------------------------- maths helpers
+function armedDelta() {
+  // cells changed by the currently armed throw, as [{i,j,k,d}]
+  const out = [];
+  for (let i = 0; i < ni; i++) if (rowSel[i]) for (let j = 0; j < nj; j++) if (colSel[j])
+    for (let k = 0; k < nk; k++) if (laySel[k]) out.push({ i, j, k, d: -pol * rowSel[i] * colSel[j] * laySel[k] });
+  return out;
+}
+function deltaKey(u, v, w, p) {
+  const parts = [];
+  for (let i = 0; i < ni; i++) for (let j = 0; j < nj; j++) for (let k = 0; k < nk; k++) parts.push(-p * u[i] * v[j] * w[k]);
+  return parts.join(",");
+}
+function linComb(coeffs, names) {
+  const terms = []; coeffs.forEach((c, idx) => { if (c) terms.push({ c, n: names[idx] }); });
+  if (!terms.length) return "?";
+  let s = ""; terms.forEach((t, idx) => {
+    if (idx === 0) s += (t.c < 0 ? "−" : "") + t.n; else s += (t.c < 0 ? " − " : " + ") + t.n;
+  });
+  return terms.length > 1 ? "(" + s + ")" : s;
+}
+function formulaFor(u, v, w, p) {
+  const outs = []; w.forEach((c, k) => { if (c) outs.push((c * p > 0 ? "+" : "−") + L.layers[k]); });
+  return linComb(u, L.rows) + " × " + linComb(v, L.cols) + "  →  " + (outs.length ? outs.join(" ") : "?");
+}
+function effectLabel(oldV, newV) {
+  if (newV === 0) return oldV > 0 ? { t: "CLEAR!", good: true } : { t: "MELT!", good: true };
+  if (oldV === 0) return newV > 0 ? { t: "DRIFT!", good: false } : { t: "PIT!", good: false };
+  if (Math.abs(newV) < Math.abs(oldV)) return { t: "CHIP!", good: true };
+  return newV > 0 ? { t: "PILE-UP!", good: false } : { t: "DEEPER!", good: false };
+}
+const fmtSigned = (x) => (x > 0 ? "+" : x < 0 ? "−" : "") + Math.abs(x);
+function elapsedMs() {
+  if (elapsedFinal != null) return elapsedFinal;
+  return timerStart == null ? 0 : performance.now() - timerStart;
+}
+const fmtTime = (ms) => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+function startTimer() { if (timerStart == null && !won) timerStart = performance.now(); }
+
+// ---------------------------------------------------------------- toast
+let toastTimer = null;
+function toast(msg, kind) {
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.className = "show" + (kind === "cyan" ? " cyan" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.className = kind === "cyan" ? "cyan" : ""; }, 1900);
+}
+
+// ---------------------------------------------------------------- actions
+function cycle(v) { return v === 0 ? 1 : v === 1 ? -1 : 0; }
+function toggle(kind, idx) {
+  if (won || charging) return;
+  startTimer();
+  const arr = kind === "r" ? rowSel : kind === "c" ? colSel : laySel;
+  arr[idx] = cycle(arr[idx]);
+  sfx.click();
+}
+function beginCharge(source) {
+  if (won || charging || !readyForInput) return;
+  if (flights.length) return;
+  audio();
+  if (!armedDelta().length) {
+    sfx.error();
+    toast("Arm at least one row, one column and one 🎁 stocking first!");
+    sadUntil = performance.now() + 700;
+    return;
+  }
+  startTimer();
+  charging = true; chargeStart = performance.now(); chargeSource = source;
+  humStart();
+}
+function endCharge(source) {
+  if (!charging || (chargeSource && source && source !== chargeSource && source !== "cancel")) return;
+  charging = false; humStop();
+  const held = performance.now() - chargeStart;
+  if (source === "cancel") return;
+  if (held < WEAK_MS) {
+    sfx.weak(); sadUntil = performance.now() + 900;
+    toast("❄️ Weak toss! Hold longer to charge — no throw wasted.");
+    return;
+  }
+  doThrow(Math.min(1, held / CHARGE_MS));
+}
+function doThrow(power) {
+  const cells = armedDelta();
+  const u = rowSel.slice(), v = colSel.slice(), w = laySel.slice();
+  history.push({ u, v, w, pol, before: clone3(T) });
+  cells.forEach(c => { T[c.i][c.j][c.k] += c.d; });
+  throws++;
+  shake = 6 + 6 * power; bounce = 1;
+  sfx.whoosh();
+  const ox = lay ? 132 : 0, oy = 432;
+  const dur = 520 - 200 * power;
+  const now = performance.now();
+  cells.forEach((c, n) => {
+    const r = cellRect(c.i, c.j, c.k);
+    flights.push({ ...c, x0: ox, y0: oy, x1: r.x + r.s / 2, y1: r.y + r.s / 2, t0: now + n * 28, dur, pol, done: false });
+  });
+}
+function landed(f) {
+  const before = shown[f.i][f.j][f.k];
+  shown[f.i][f.j][f.k] = before + f.d;
+  const after = shown[f.i][f.j][f.k];
+  const good = Math.abs(after) < Math.abs(before);
+  const colour = f.pol > 0 ? "#FFFFFF" : C.orange;
+  for (let n = 0; n < 16; n++) {
+    const a = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 3.5;
+    particles.push({ x: f.x1, y: f.y1, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1, life: 0, max: 30 + Math.random() * 20,
+                     size: 1.5 + Math.random() * 2.5, color: Math.random() < 0.3 ? (good ? C.cyan : C.pink) : colour, g: 0.12 });
+  }
+  if (after === 0) sfx.chime(throws + f.i + f.j); else sfx.splat(good);
+}
+function undo() {
+  if (charging) return;
+  finishFlights();
+  if (!history.length) { toast("Nothing to undo — the snow is pristine."); sfx.error(); return; }
+  const h = history.pop();
+  T = h.before; shown = clone3(T); throws--;
+  rowSel = h.u.slice(); colSel = h.v.slice(); laySel = h.w.slice(); pol = h.pol;
+  won = false; elapsedFinal = null;
+  document.getElementById("win").classList.remove("show");
+  sfx.undo(); toast("↶ Undone — switches restored to that throw.", "cyan");
+}
+function finishFlights() {
+  flights.forEach(f => { if (!f.done) { f.done = true; shown[f.i][f.j][f.k] += f.d; } });
+  flights = []; shown = clone3(T);
+}
+function hint() {
+  if (won || charging) return;
+  const recipeKeys = L.recipe.map(s => deltaKey(s.u, s.v, s.w, 1));
+  const used = new Array(recipeKeys.length).fill(false);
+  for (const h of history) {
+    const key = deltaKey(h.u, h.v, h.w, h.pol);
+    const idx = recipeKeys.findIndex((rk, n) => !used[n] && rk === key);
+    if (idx < 0) { sfx.error(); toast("🧝 Off-recipe! Undo or Reset and the elf will guide you."); return; }
+    used[idx] = true;
+  }
+  const next = used.indexOf(false);
+  if (next < 0) return;
+  const s = L.recipe[next];
+  rowSel = s.u.slice(); colSel = s.v.slice(); laySel = s.w.slice(); pol = 1;
+  hintsUsed++; startTimer(); sfx.click();
+  toast("🧝 " + L.birdie_label + " step " + s.name + ": switches set — now hold to throw!", "cyan");
+}
+
+// ---------------------------------------------------------------- win
+function checkWin() {
+  if (won || flights.length || !isClear(T) || !throws) return;
+  won = true; elapsedFinal = elapsedMs(); cheerUntil = performance.now() + 4000;
+  sfx.win();
+  for (let n = 0; n < 220; n++) {
+    const a = Math.random() * Math.PI * 2, sp = 2 + Math.random() * 7;
+    particles.push({ x: W / 2, y: lay.top + 70, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 4, life: 0, max: 90 + Math.random() * 70,
+                     size: 3 + Math.random() * 4, color: [C.pink, C.cyan, "#FFFFFF", "#FFD166"][n % 4], g: 0.09,
+                     confetti: true, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4 });
+  }
+  const rank = L.ranks.find(r => throws <= r.max) || L.ranks[L.ranks.length - 1];
+  const emojiRow = history.map(h => h.pol > 0 ? "❄️" : "🔥").join("");
+  const beatBirdie = throws <= L.birdie;
+  let line1 = "🐙 Data Advent: Snowball Tensor Fight | " + L.tag + ": " + throws + "/" + L.par + " Throws (" + rank.brag + ") ❄️🔥" + (beatBirdie ? "🎯" : "");
+  let line2 = emojiRow + "  ⏱ " + fmtTime(elapsedFinal) + "  🏅 " + rank.title + (hintsUsed ? "  🧝 " + hintsUsed + " elf hint" + (hintsUsed > 1 ? "s" : "") : "");
+  const card = line1 + "\n" + line2;
+  document.getElementById("winKicker").textContent = L.tag + " cleared in " + throws + " throw" + (throws === 1 ? "" : "s");
+  document.getElementById("winTitle").textContent = rank.title + " — " + throws + " Throws!";
+  document.getElementById("winStats").textContent = "Par " + L.par + " · " + L.birdie_label + " " + L.birdie + " · ⏱ " + fmtTime(elapsedFinal) +
+    (beatBirdie ? " · 🎯 Record-level!" : "");
+  document.getElementById("scorecard").textContent = card;
+  document.getElementById("recipe").innerHTML = "<b style='color:#00F0FF'>Your multiplication algorithm:</b><br>" +
+    history.map((h, n) => "M" + (n + 1) + " = " + escapeHtml(formulaFor(h.u, h.v, h.w, h.pol))).join("<br>");
+  setTimeout(() => { if (won) { document.getElementById("win").classList.add("show"); document.getElementById("copyBtn").focus(); } }, 1100);
+  post("streamlit:setComponentValue", { value: { level: L.id, throws, par: L.par, birdie: L.birdie, seconds: Math.round(elapsedFinal / 100) / 10,
+       hints: hintsUsed, rank: rank.title, scorecard: card, recipe: history.map(h => formulaFor(h.u, h.v, h.w, h.pol)), at: Date.now() }, dataType: "json" });
+}
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+document.getElementById("copyBtn").addEventListener("click", async () => {
+  const text = document.getElementById("scorecard").textContent;
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {}
+  if (!ok) {
+    const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch (_) {}
+    ta.remove();
+  }
+  if (ok) { toast("📋 Copied! Paste it in Slack.", "cyan"); sfx.chime(3); }
+  else {
+    const sel = window.getSelection(), r = document.createRange();
+    r.selectNodeContents(document.getElementById("scorecard")); sel.removeAllRanges(); sel.addRange(r);
+    toast("Selected — press Ctrl/⌘+C to copy.");
+  }
+});
+document.getElementById("againBtn").addEventListener("click", () => resetLevel(false));
+document.getElementById("peekBtn").addEventListener("click", () => document.getElementById("win").classList.remove("show"));
+
+// ---------------------------------------------------------------- input
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H };
+}
+function hitAt(p) {
+  for (let n = hits.length - 1; n >= 0; n--) {
+    const h = hits[n];
+    if (h.r != null) { if ((p.x - h.x) ** 2 + (p.y - h.y) ** 2 <= h.r * h.r) return h; }
+    else if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) return h;
+  }
+  return null;
+}
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.focus();
+  const p = toLogical(e), h = hitAt(p);
+  if (!h) return;
+  e.preventDefault();
+  if (h.id === "throw") { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} beginCharge("pointer"); return; }
+  h.act && h.act();
+});
+canvas.addEventListener("pointerup", () => endCharge("pointer"));
+canvas.addEventListener("pointercancel", () => endCharge("cancel"));
+canvas.addEventListener("pointermove", (e) => {
+  mouse = toLogical(e);
+  const h = hitAt(mouse); hover = h ? h.id : null;
+  canvas.style.cursor = h ? "pointer" : "default";
+});
+canvas.addEventListener("pointerleave", () => { hover = null; mouse = { x: -1, y: -1 }; });
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); if (!e.repeat) beginCharge("key"); }
+  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
+});
+window.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); endCharge("key"); } });
+window.addEventListener("blur", () => endCharge("cancel"));
+
+// ---------------------------------------------------------------- drawing helpers
+function rr(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function text(s, x, y, size, color, align = "left", weight = 600, font = FONT) {
+  ctx.font = weight + " " + size + "px " + font; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.fillText(s, x, y);
+}
+function glow(color, blur) { ctx.shadowColor = color; ctx.shadowBlur = blur; }
+function noGlow() { ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; }
+
+function button(id, x, y, w, h, label, opts = {}) {
+  const hov = hover === id, active = opts.active;
+  rr(x, y, w, h, h / 2);
+  ctx.fillStyle = active ? (opts.color || C.cyan) : hov ? C.card2 : C.card; ctx.fill();
+  if (active || hov) glow(opts.color || C.cyan, active ? 16 : 8);
+  ctx.lineWidth = 1.5; ctx.strokeStyle = active ? (opts.color || C.cyan) : hov ? (opts.color || C.cyan) : C.line; ctx.stroke(); noGlow();
+  text(label, x + w / 2, y + h / 2 + 0.5, opts.size || 13, active ? C.bg : C.text, "center", 700);
+  hits.push({ id, x, y, w, h, act: opts.act });
+}
+function signToggle(id, x, y, w, h, label, val, act) {
+  const col = val > 0 ? C.cyan : val < 0 ? C.pink : null, hov = hover === id;
+  rr(x, y, w, h, 7);
+  ctx.fillStyle = col ? col : hov ? C.card2 : C.card; ctx.fill();
+  if (col) glow(col, 14);
+  ctx.lineWidth = 1.5; ctx.strokeStyle = col || (hov ? C.muted : C.line); ctx.stroke(); noGlow();
+  const prefix = val > 0 ? "+" : val < 0 ? "−" : "";
+  text(prefix + label, x + w / 2, y + h / 2 + 0.5, h < 24 ? 11 : 13, col ? C.bg : C.text, "center", 800);
+  hits.push({ id, x, y, w, h, act });
+}
+
+// ---------------------------------------------------------------- scene pieces
+function drawBackground(t) {
+  const g = ctx.createRadialGradient(W * 0.5, H * 0.25, 40, W * 0.5, H * 0.45, W * 0.85);
+  g.addColorStop(0, "#22004F"); g.addColorStop(1, C.bg);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // snow
+  for (const f of flakes) {
+    f.y += f.vy; f.x += Math.sin(t / 1000 * f.wob + f.ph) * 0.3 + f.vx;
+    if (f.y > H + 4) { f.y = -4; f.x = Math.random() * W; }
+    if (f.x < -4) f.x = W + 4; if (f.x > W + 4) f.x = -4;
+    ctx.globalAlpha = f.a; ctx.fillStyle = "#FFFFFF";
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawTopBar() {
+  text(L.tag.toUpperCase(), 18, 20, 11, C.pink, "left", 800);
+  text(L.title, 18, 40, 17, C.text, "left", 800);
+  text(L.blurb, 18, 66, 11.5, C.muted, "left", 500);
+  // chips
+  const chips = [
+    { l: "THROWS", v: String(throws), c: C.cyan },
+    { l: "PAR", v: String(L.par), c: C.muted },
+    { l: "🎯 " + L.birdie_label.toUpperCase(), v: String(L.birdie), c: C.pink },
+    { l: "TIME", v: fmtTime(elapsedMs()), c: C.muted },
+  ];
+  let x = W - 54;
+  for (let n = chips.length - 1; n >= 0; n--) {
+    const ch = chips[n];
+    ctx.font = "800 9px " + FONT; const lw = ctx.measureText(ch.l).width;
+    const w = Math.max(46, lw + 16);
+    x -= w + 6;
+    rr(x, 12, w, 40, 10); ctx.fillStyle = C.card; ctx.fill(); ctx.strokeStyle = n === 0 ? C.cyan : C.line; ctx.lineWidth = 1; ctx.stroke();
+    text(ch.l, x + w / 2, 23, 9, ch.c, "center", 800);
+    text(ch.v, x + w / 2, 40, 16, C.text, "center", 800, n === 3 ? MONO : FONT);
+  }
+  button("mute", W - 50, 14, 36, 36, muted ? "🔇" : "🔊", { size: 16, act: () => { muted = !muted; if (muted) humStop(); else sfx.click(); } });
+}
+function drawLasers(t) {
+  const dash = -(t / 30) % 20;
+  ctx.save(); ctx.lineWidth = 2; ctx.setLineDash([10, 6]); ctx.lineDashOffset = dash;
+  const lastB = lay.boards[nk - 1];
+  for (let i = 0; i < ni; i++) if (rowSel[i]) {
+    const col = rowSel[i] > 0 ? C.cyan : C.pink, y = lay.top + i * lay.cs + lay.cs / 2;
+    glow(col, 10); ctx.strokeStyle = col; ctx.globalAlpha = 0.75;
+    ctx.beginPath(); ctx.moveTo(80, y); ctx.lineTo(lastB.x + lastB.w + 6, y); ctx.stroke();
+  }
+  for (let j = 0; j < nj; j++) if (colSel[j]) {
+    const col = colSel[j] > 0 ? C.cyan : C.pink;
+    glow(col, 10); ctx.strokeStyle = col; ctx.globalAlpha = 0.75;
+    for (const b of lay.boards) {
+      const x = b.x + j * lay.cs + lay.cs / 2;
+      ctx.beginPath(); ctx.moveTo(x, lay.colY + 22); ctx.lineTo(x, b.y + b.h + 4); ctx.stroke();
+    }
+  }
+  ctx.restore(); noGlow();
+}
+function drawSnowdrift(cx, cy, s, n) {
+  const k = Math.min(1.25, 0.8 + 0.2 * n);
+  ctx.save(); ctx.translate(cx, cy + s * 0.18);
+  glow("rgba(0,240,255,.55)", 8);
+  ctx.fillStyle = "#EAF8FF";
+  ctx.beginPath(); ctx.ellipse(0, 0, s * 0.36 * k, s * 0.17 * k, 0, Math.PI, 0); ctx.fill();
+  ctx.beginPath(); ctx.arc(-s * 0.1 * k, -s * 0.08 * k, s * 0.17 * k, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(s * 0.12 * k, -s * 0.05 * k, s * 0.14 * k, 0, Math.PI * 2); ctx.fill();
+  noGlow();
+  ctx.fillStyle = "rgba(0,240,255,.35)";
+  ctx.beginPath(); ctx.ellipse(0, 0, s * 0.36 * k, s * 0.05, 0, 0, Math.PI); ctx.fill();
+  ctx.restore();
+}
+function drawPit(cx, cy, s, n, t) {
+  const k = Math.min(1.25, 0.8 + 0.2 * n);
+  ctx.save(); ctx.translate(cx, cy + 2);
+  const pulse = 0.6 + 0.4 * Math.sin(t / 300 + cx);
+  glow(C.orange, 10 * pulse);
+  ctx.fillStyle = "#3A0420"; ctx.beginPath(); ctx.ellipse(0, 0, s * 0.34 * k, s * 0.2 * k, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = C.pink; ctx.stroke(); noGlow();
+  const g = ctx.createRadialGradient(0, 0, 1, 0, 0, s * 0.3 * k);
+  g.addColorStop(0, "rgba(255,138,61," + (0.8 * pulse) + ")"); g.addColorStop(1, "rgba(255,138,61,0)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 0, s * 0.3 * k, s * 0.16 * k, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function drawBoards(t) {
+  const target = armedDelta();
+  const targeted = new Set(target.map(c => c.i + "," + c.j + "," + c.k));
+  lay.boards.forEach((b, k) => {
+    // board frame
+    rr(b.x - 5, b.y - 5, b.w + 10, b.h + 10, 10);
+    ctx.fillStyle = "rgba(29,0,66,.85)"; ctx.fill();
+    if (laySel[k]) glow(laySel[k] > 0 ? C.cyan : C.pink, 18);
+    ctx.lineWidth = laySel[k] ? 2 : 1; ctx.strokeStyle = laySel[k] ? (laySel[k] > 0 ? C.cyan : C.pink) : C.line; ctx.stroke(); noGlow();
+    for (let i = 0; i < ni; i++) for (let j = 0; j < nj; j++) {
+      const r = cellRect(i, j, k), v = shown[i][j][k];
+      const pad = 2;
+      rr(r.x + pad, r.y + pad, r.s - 2 * pad, r.s - 2 * pad, 6);
+      ctx.fillStyle = (i + j) % 2 ? "#170036" : "#1F0547"; ctx.fill();
+      if (targeted.has(i + "," + j + "," + k)) {
+        const pulse = 0.5 + 0.5 * Math.sin(t / 160);
+        ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,255,255," + (0.35 + 0.5 * pulse) + ")"; ctx.stroke();
+      }
+      const cx = r.x + r.s / 2, cy = r.y + r.s / 2;
+      if (v > 0) drawSnowdrift(cx, cy, r.s, v);
+      else if (v < 0) drawPit(cx, cy, r.s, -v, t);
+      else { ctx.fillStyle = "rgba(185,166,224,.18)"; ctx.beginPath(); ctx.arc(cx, cy, 1.6, 0, Math.PI * 2); ctx.fill(); }
+      if (Math.abs(v) > 1 || (v !== 0 && r.s > 40)) {
+        text(fmtSigned(v), r.x + r.s - 5, r.y + 8, r.s > 40 ? 11 : 9, v > 0 ? C.cyan : C.pink, "right", 800);
+      }
+    }
+  });
+  // column toggles above every board (they're linked: same b entry)
+  lay.boards.forEach((b, k) => {
+    for (let j = 0; j < nj; j++) {
+      const x = b.x + j * lay.cs + 1;
+      signToggle("c" + j + "_" + k, x, lay.colY, lay.cs - 2, 22, L.cols[j], colSel[j], () => toggle("c", j));
+      if (hover === "c" + j + "_" + k) { /* linked highlight */ }
+    }
+    signToggle("l" + k, b.x - 3, lay.layY, b.w + 6, 26, "🎁 " + L.layers[k], laySel[k], () => toggle("l", k));
+  });
+  // linked-hover hint for columns
+  if (hover && hover[0] === "c") {
+    const j = +hover.slice(1).split("_")[0];
+    lay.boards.forEach(b => { rr(b.x + j * lay.cs, lay.colY - 2, lay.cs, 26, 8); ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = 1; ctx.stroke(); });
+  }
+  // row toggles
+  for (let i = 0; i < ni; i++) {
+    const h = Math.min(lay.cs - 6, 28), y = lay.top + i * lay.cs + (lay.cs - h) / 2;
+    signToggle("r" + i, 14, y, 62, h, L.rows[i], rowSel[i], () => toggle("r", i));
+  }
+  text("A ↓", 45, lay.colY + 11, 10, C.muted, "center", 800);
+  text("B →", lay.x0 - 18, lay.colY + 11, 10, C.muted, "center", 800);
+}
+function drawPreview(t) {
+  const cells = armedDelta();
+  const frac = charging ? Math.min(1, (performance.now() - chargeStart) / CHARGE_MS) : 0;
+  if (!charging || !cells.length) return;
+  const a = Math.min(1, frac * 3);
+  ctx.globalAlpha = a;
+  for (const c of cells) {
+    const r = cellRect(c.i, c.j, c.k), o = T[c.i][c.j][c.k], n = o + c.d, e = effectLabel(o, n);
+    const s = r.s, bw = Math.max(s + 14, 50), bh = s > 40 ? 30 : 24, bx = r.x + s / 2 - bw / 2, by = r.y + s / 2 - bh / 2;
+    rr(bx, by, bw, bh, 7); ctx.fillStyle = e.good ? "rgba(10,60,50,.92)" : "rgba(80,0,40,.92)"; ctx.fill();
+    glow(e.good ? C.good : C.bad, 8); ctx.strokeStyle = e.good ? C.good : C.bad; ctx.lineWidth = 1.2; ctx.stroke(); noGlow();
+    text(fmtSigned(o) + "→" + fmtSigned(n), bx + bw / 2, by + bh * 0.32, s > 40 ? 11 : 9, C.text, "center", 800, MONO);
+    text(e.t, bx + bw / 2, by + bh * 0.74, s > 40 ? 10 : 8, e.good ? C.good : C.bad, "center", 900);
+  }
+  ctx.globalAlpha = 1;
+}
+function drawFormula() {
+  const y = lay.formulaY;
+  const any = rowSel.some(x => x) || colSel.some(x => x) || laySel.some(x => x);
+  rr(18, y - 18, W - 36, 36, 18); ctx.fillStyle = "rgba(29,0,66,.9)"; ctx.fill(); ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.stroke();
+  if (!any) {
+    text("Arm switches to build ONE multiplication: rows pick from A, columns from B, 🎁 says which output gets it", W / 2, y, 11.5, C.muted, "center", 600);
+    return;
+  }
+  const cells = armedDelta();
+  let s = formulaFor(rowSel, colSel, laySel, pol);
+  text("THROW " + (throws + 1) + " =", 34, y, 10, C.pink, "left", 900);
+  text(s, 110, y, 14, C.text, "left", 700, MONO);
+  if (cells.length) {
+    let good = 0, bad = 0; cells.forEach(c => { const o = T[c.i][c.j][c.k]; Math.abs(o + c.d) < Math.abs(o) ? good++ : bad++; });
+    text("✔" + good + "  ✖" + bad, W - 34, y, 12, bad ? C.bad : C.good, "right", 800, MONO);
+  }
+}
+function drawConstantine(t) {
+  const now = performance.now();
+  const frac = charging ? Math.min(1, (now - chargeStart) / CHARGE_MS) : 0;
+  const cheering = now < cheerUntil, sad = now < sadUntil;
+  const bx = 112, by = 470 - Math.abs(Math.sin(t / 420)) * 4 - bounce * 14 - (cheering ? Math.abs(Math.sin(t / 120)) * 16 : 0);
+  // shadow
+  ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(112, 560, 62, 10, 0, 0, Math.PI * 2); ctx.fill();
+  // tentacles
+  ctx.lineCap = "round";
+  for (let n = 0; n < 7; n++) {
+    const ang = -0.95 + n * 0.32, baseX = bx + Math.sin(ang) * 40, baseY = by + 28;
+    const wig = Math.sin(t / 260 + n * 1.3) * 10;
+    const raised = n === 6 && (charging || bounce > 0.2);
+    ctx.strokeStyle = n % 2 ? "#D63FDE" : C.pink; ctx.lineWidth = 11 - Math.abs(n - 3) * 0.6;
+    ctx.beginPath(); ctx.moveTo(baseX, baseY);
+    if (raised) {
+      const tx = bx + 62, ty = by - 30 - frac * 18;
+      ctx.quadraticCurveTo(bx + 70, by + 30, tx, ty); ctx.stroke();
+      if (charging) {
+        const ballR = 6 + frac * 9;
+        glow(pol > 0 ? C.cyan : C.orange, 10 + frac * 20);
+        ctx.fillStyle = pol > 0 ? "#FFFFFF" : C.orange; ctx.beginPath(); ctx.arc(tx + 4, ty - ballR + 2, ballR, 0, Math.PI * 2); ctx.fill(); noGlow();
+      }
+    } else {
+      const ex = baseX + Math.sin(ang) * 30 + wig, ey = 556;
+      ctx.quadraticCurveTo(baseX + Math.sin(ang) * 10 - wig, baseY + 30, ex, ey);
+      ctx.quadraticCurveTo(ex + 8 * Math.sign(Math.sin(ang) || 1), ey + 2, ex + 10 * Math.sign(Math.sin(ang) || 1), ey - 8);
+      ctx.stroke();
+    }
+  }
+  // head
+  glow(C.pink, 24);
+  const hg = ctx.createRadialGradient(bx - 14, by - 22, 6, bx, by, 58);
+  hg.addColorStop(0, "#FF9CFF"); hg.addColorStop(1, "#C42DCE");
+  ctx.fillStyle = hg; ctx.beginPath(); ctx.ellipse(bx, by, 50, 46, 0, 0, Math.PI * 2); ctx.fill(); noGlow();
+  // eyes follow mouse / board
+  const lookX = mouse.x >= 0 ? mouse.x : 400, lookY = mouse.y >= 0 ? mouse.y : 200;
+  for (const ex of [-17, 17]) {
+    const cx = bx + ex, cy = by - 6;
+    ctx.fillStyle = "#FFFFFF"; ctx.beginPath(); ctx.ellipse(cx, cy, 11, sad ? 7 : 13, 0, 0, Math.PI * 2); ctx.fill();
+    const a = Math.atan2(lookY - cy, lookX - cx);
+    ctx.fillStyle = C.bg; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 4.5, cy + Math.sin(a) * 5, 5.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#FFFFFF"; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 4.5 + 2, cy + Math.sin(a) * 5 - 2, 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+  // cheeks + mouth
+  ctx.fillStyle = "rgba(255,255,255,.25)";
+  ctx.beginPath(); ctx.ellipse(bx - 30, by + 12, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(bx + 30, by + 12, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = C.bg; ctx.lineWidth = 3; ctx.beginPath();
+  if (sad) ctx.arc(bx, by + 24, 8, Math.PI * 1.15, Math.PI * 1.85);
+  else if (charging) { ctx.ellipse(bx, by + 16, 5, 3 + frac * 3, 0, 0, Math.PI * 2); }
+  else ctx.arc(bx, by + 10, cheering ? 12 : 9, 0.15 * Math.PI, 0.85 * Math.PI);
+  ctx.stroke();
+  // santa hat
+  ctx.save(); ctx.translate(bx + 6, by - 40); ctx.rotate(0.18 + Math.sin(t / 500) * 0.05);
+  ctx.fillStyle = "#E8264A"; ctx.beginPath(); ctx.moveTo(-34, 6); ctx.quadraticCurveTo(-6, -50, 30, -34); ctx.lineTo(30, -32);
+  ctx.quadraticCurveTo(10, -18, 32, 6); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#FFFFFF"; rr(-38, 0, 74, 13, 6.5); ctx.fill();
+  ctx.beginPath(); ctx.arc(32, -32, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  text("Constantine", 112, 588, 12, C.pink, "center", 800);
+  text(pol > 0 ? "armed: +1 snowball ❄️" : "armed: −1 magma ball 🔥", 112, 605, 10.5, pol > 0 ? C.cyan : C.orange, "center", 700);
+}
+function drawThrowButton(t) {
+  const cx = 336, cy = 474, R = 74;
+  const now = performance.now();
+  const frac = charging ? Math.min(1, (now - chargeStart) / CHARGE_MS) : 0;
+  const armed = armedDelta().length > 0 && !won;
+  const col = pol > 0 ? C.cyan : C.pink;
+  // gauge track
+  ctx.lineWidth = 9; ctx.strokeStyle = "rgba(255,255,255,.08)";
+  ctx.beginPath(); ctx.arc(cx, cy, R + 12, 0, Math.PI * 2); ctx.stroke();
+  if (charging) {
+    glow(frac >= 1 ? C.text : col, 18 + frac * 14); ctx.strokeStyle = frac >= 1 ? "#FFFFFF" : col; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.arc(cx, cy, R + 12, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac); ctx.stroke(); noGlow(); ctx.lineCap = "butt";
+    // gathering particles
+    if (Math.random() < 0.9) for (let n = 0; n < 2; n++) {
+      const a = Math.random() * Math.PI * 2, d = R + 50 + Math.random() * 40;
+      particles.push({ x: cx + Math.cos(a) * d, y: cy + Math.sin(a) * d, tx: cx, ty: cy, gather: true, life: 0, max: 26,
+                       size: 1.5 + Math.random() * 2, color: pol > 0 ? "#FFFFFF" : C.orange });
+    }
+  }
+  const hov = hover === "throw";
+  const pulse = armed && !charging ? 0.5 + 0.5 * Math.sin(t / 300) : 0;
+  const grd = ctx.createRadialGradient(cx - 20, cy - 25, 10, cx, cy, R);
+  grd.addColorStop(0, armed ? (pol > 0 ? "#5BF7FF" : "#FF8CFF") : "#3A2470");
+  grd.addColorStop(1, armed ? (pol > 0 ? "#007C9A" : "#9A16A4") : "#1D0042");
+  glow(armed ? col : "transparent", 14 + pulse * 18 + (hov ? 8 : 0) + frac * 24);
+  ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(cx, cy, R - frac * 4, 0, Math.PI * 2); ctx.fill(); noGlow();
+  ctx.lineWidth = 2; ctx.strokeStyle = armed ? "#FFFFFF" : C.line; ctx.stroke();
+  const label = charging ? (frac >= 1 ? "RELEASE!" : Math.round(frac * 100) + "%") : "HOLD TO";
+  text(label, cx, cy - 16, charging ? 22 : 15, C.text, "center", 900);
+  if (!charging) { text("CHARGE &", cx, cy + 2, 15, C.text, "center", 900); text("THROW", cx, cy + 21, 17, C.text, "center", 900); }
+  else text(pol > 0 ? "❄️ +1 snowball" : "🔥 −1 magma", cx, cy + 16, 12, C.text, "center", 800);
+  text("(or hold Space)", cx, cy + R + 32, 10.5, C.muted, "center", 600);
+  hits.push({ id: "throw", x: cx, y: cy, r: R + 12 });
+}
+function drawSidePanel() {
+  const x = 478, w = 186;
+  text("BALL TYPE", x + w / 2, 330, 10, C.muted, "center", 900);
+  button("polP", x, 342, w, 34, "+1 Snowball ❄️", { active: pol > 0, color: C.cyan, act: () => { if (!charging && !won) { pol = 1; sfx.click(); } } });
+  button("polM", x, 382, w, 34, "−1 Magma Ball 🔥", { active: pol < 0, color: C.pink, act: () => { if (!charging && !won) { pol = -1; sfx.click(); } } });
+  button("undo", x, 436, (w - 8) / 2, 34, "↶ Undo", { act: undo });
+  button("reset", x + (w + 8) / 2, 436, (w - 8) / 2, 34, "⟲ Reset", { act: () => { if (!charging) resetLevel(false); } });
+  button("hint", x, 478, w, 34, "🧝 Elf hint (" + L.birdie_label + ")", { act: hint, size: 12 });
+  button("clear", x, 520, w, 34, "✕ Disarm all switches", { size: 12, act: () => { if (!charging && !won) { rowSel.fill(0); colSel.fill(0); laySel.fill(0); sfx.click(); } } });
+  // remaining snow counter
+  let left = 0; T.forEach(p => p.forEach(r => r.forEach(v => { if (v) left++; })));
+  text("Cells still dirty: " + left, x + w / 2, 574, 12, left ? C.text : C.good, "center", 800);
+  text(history.length ? history.map(h => h.pol > 0 ? "❄️" : "🔥").join("") : "no throws yet", x + w / 2, 596, 12, C.muted, "center", 600);
+}
+function drawFooter() {
+  text("Switches cycle off → + → −   ·   Rows × Columns × 🎁 = one rank-1 throw   ·   Ctrl/⌘+Z undo", W / 2, H - 22, 10.5, C.muted, "center", 600);
+}
+function drawFlights(now) {
+  for (const f of flights) {
+    if (f.done) continue;
+    const p = (now - f.t0) / f.dur;
+    if (p < 0) continue;
+    if (p >= 1) { f.done = true; landed(f); continue; }
+    const e = p;
+    const x = f.x0 + (f.x1 - f.x0) * e, y = f.y0 + (f.y1 - f.y0) * e - Math.sin(Math.PI * e) * 110;
+    glow(f.pol > 0 ? C.cyan : C.orange, 14);
+    ctx.fillStyle = f.pol > 0 ? "#FFFFFF" : C.orange; ctx.beginPath(); ctx.arc(x, y, 5.5, 0, Math.PI * 2); ctx.fill(); noGlow();
+    if (Math.random() < 0.5) particles.push({ x, y, vx: 0, vy: 0.3, life: 0, max: 16, size: 2, color: f.pol > 0 ? "rgba(255,255,255,.7)" : "rgba(255,138,61,.8)", g: 0 });
+  }
+  if (flights.length && flights.every(f => f.done)) { flights = []; shown = clone3(T); bounce = 0; checkWin(); }
+}
+function drawParticles() {
+  const next = [];
+  for (const p of particles) {
+    p.life++;
+    if (p.gather) { p.x += (p.tx - p.x) * 0.12; p.y += (p.ty - p.y) * 0.12; }
+    else { p.x += p.vx; p.y += p.vy; p.vy += p.g || 0; p.vx *= 0.99; }
+    const a = 1 - p.life / p.max;
+    if (a <= 0) continue;
+    ctx.globalAlpha = a; ctx.fillStyle = p.color;
+    if (p.confetti) { p.rot += p.vr; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillRect(-p.size / 2, -p.size, p.size, p.size * 2); ctx.restore(); }
+    else { ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill(); }
+    next.push(p);
+  }
+  ctx.globalAlpha = 1;
+  particles = next.length > 900 ? next.slice(-900) : next;
+}
+
+// ---------------------------------------------------------------- loop
+for (let n = 0; n < 110; n++) flakes.push({ x: Math.random() * W, y: Math.random() * H, r: 0.6 + Math.random() * 1.8,
+  vy: 0.25 + Math.random() * 0.8, vx: -0.1 + Math.random() * 0.2, a: 0.25 + Math.random() * 0.6, wob: 0.5 + Math.random(), ph: Math.random() * 6 });
+
+function frame(t) {
+  ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+  hits = [];
+  drawBackground(t);
+  if (!L) {
+    text("❄️ Loading snowballs…", W / 2, H / 2, 18, C.text, "center", 800);
+    text("(run with: streamlit run app.py)", W / 2, H / 2 + 28, 12, C.muted, "center", 600);
+    requestAnimationFrame(frame); return;
+  }
+  const now = performance.now();
+  if (charging) shake = Math.max(shake, 1.5 + 3 * Math.min(1, (now - chargeStart) / CHARGE_MS));
+  ctx.save();
+  if (shake > 0.1) { ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake); shake *= 0.86; }
+  bounce *= 0.9;
+  drawTopBar();
+  drawLasers(t);
+  drawBoards(t);
+  drawPreview(t);
+  drawFormula();
+  drawConstantine(t);
+  drawThrowButton(t);
+  drawSidePanel();
+  drawFooter();
+  drawFlights(now);
+  drawParticles();
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+
+resize();
+post("streamlit:componentReady", { apiVersion: 1 });
+requestAnimationFrame(frame);
+
+// test hook (used by automated checks; harmless in production)
+window.__snowball = { state: () => ({ T, throws, won, rowSel, colSel, laySel, pol, hintsUsed }), loadLevel };
+})();
+</script>
+</body>
+</html>
