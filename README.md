@@ -14,6 +14,15 @@ time. Music is a swing chiptune bassline over ii-V-I changes, and the catch chim
 * `zero_hunt/build_assets.py`: regenerates `component/terrain.png`, `component/height.png` (the physics heightmap)
   and `map_meta.json` (needs `mpmath`). All three are committed, so the app itself needs no maths libraries at runtime.
 * `zero_hunt/component/index.html`: the canvas game (sprites, physics, audio, CRT overlay).
+* `zero_hunt/scoreboard.py`: the global high-score table (SQLite). Players enter a name at the end of a run and get
+  ranked; the title screen cycles to the top 10 in attract mode.
+  **Hosting:** set `ZERO_HUNT_DB=/path/on/shared/persistent/storage/scores.sqlite3` so the board survives restarts and
+  every app replica sees the same file. Swap `submit`/`top` for your warehouse if you'd rather keep it there. If the
+  data app has login (`st.user`), the name box is pre-filled from it. Scores are submitted by the browser, so treat the
+  board as friendly competition rather than tamper-proof.
+* Music: SWING (ii-V-I-VI with extended voicings), BLUES (12-bar F shuffle, boogie bass) and MODAL (quartal E dorian
+  vamp). Pick with left/right on the title screen. Each catch ticks instantly, then the bauble flies to the tree and
+  lands, with its chime, on the band's next swung off-beat.
 * Tuning knobs: `cruise()`, the gravity factor (`-46 * gS`), `CATCH_R`, `GREAT_R` and `PERFECT_R` in `index.html`.
 
 ---
