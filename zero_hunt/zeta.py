@@ -93,3 +93,59 @@ def first_zeros(n: int) -> list[float]:
 
     mpmath.mp.dps = 20
     return [float(mpmath.zetazero(k).imag) for k in range(1, n + 1)]
+
+
+# ---------------------------------------------------------------------------
+# Arcade terrain: height = -log|ζ|, so every zero is a snowy peak.
+# Rendered at "art" resolution (one art pixel = ART_SCALE screen pixels).
+# ---------------------------------------------------------------------------
+ART_SCALE = 3
+ART_T_MIN, ART_T_MAX = -3.0, 118.0
+ART_PX_PER_T = 16          # art pixels per unit of t (48 screen px)
+ART_PX_PER_SIGMA = 50      # art pixels per unit of sigma (150 screen px)
+H_MIN, H_MAX = -4.0, 3.0   # height clip range (stored in the heightmap)
+
+# (upper edge of band, fill colour, contour colour)
+BANDS = [
+    (-2.5, "#04000C", "#0A0118"),
+    (-1.5, "#07010F", "#100326"),
+    (-0.75, "#0A0216", "#170632"),
+    (0.0, "#0E031E", "#1F0942"),
+    (0.6, "#13052A", "#2C0F5C"),
+    (1.2, "#1C0840", "#43207E"),
+    (1.8, "#2B0F5E", "#6A3AB0"),
+    (2.4, "#4A2290", "#9C7BE0"),
+    (2.85, "#9FD9FF", "#D8F3FF"),
+    (99.0, "#FFFFFF", "#FFFFFF"),
+]
+
+
+def terrain_heights() -> np.ndarray:
+    w = int(round((SIGMA_MAX - SIGMA_MIN) * ART_PX_PER_SIGMA))
+    h = int(round((ART_T_MAX - ART_T_MIN) * ART_PX_PER_T))
+    sig = SIGMA_MIN + (np.arange(w) + 0.5) / ART_PX_PER_SIGMA
+    t = ART_T_MAX - (np.arange(h) + 0.5) / ART_PX_PER_T
+    Z = zeta_grid(sig[None, :] + 1j * t[:, None])
+    return np.clip(-np.log(np.abs(Z) + 1e-12), H_MIN, H_MAX)
+
+
+def terrain_image(hgt: np.ndarray) -> np.ndarray:
+    edges = np.array([b[0] for b in BANDS])
+    level = np.searchsorted(edges, hgt, side="right")
+    level = np.minimum(level, len(BANDS) - 1)
+    fill = np.stack([_hex(b[1]) for b in BANDS])
+    line = np.stack([_hex(b[2]) for b in BANDS])
+    img = fill[level]
+    # contour: a pixel whose band is higher than a neighbour's (4-neighbourhood)
+    up = np.zeros_like(level, dtype=bool)
+    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nb = np.roll(np.roll(level, dy, 0), dx, 1)
+        up |= level > nb
+    up[0, :] = up[-1, :] = False
+    up[:, 0] = up[:, -1] = False
+    img[up] = line[level[up]]
+    # sparse sparkle on the snow caps (deterministic)
+    rng = np.random.default_rng(1859)
+    sparkle = (level >= len(BANDS) - 3) & (rng.random(level.shape) < 0.04)
+    img[sparkle] = _hex("#FFFFFF")
+    return img.astype(np.uint8)

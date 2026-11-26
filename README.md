@@ -2,16 +2,19 @@
 
 Two festive Streamlit mini-games for the Octopus Energy Data Advent calendar.
 
-## 🎄 Zero Hunt (Riemann hypothesis): `streamlit run zero_hunt/app.py`
+## Zero Hunt (Riemann hypothesis): `streamlit run zero_hunt/app.py`
 
-Constantine sledges up the critical line of the Riemann zeta function. Click the swirls (the zeros) before they slide
-past the snowline, build combos, and hang 30 baubles on the tree. Every zero sits on Re(s) = ½, as proven in Lean in
-November 2026 (Alpöge & Claude). The ending gives you a Slack scorecard.
+An 8-bit arcade racer. The terrain is a pixel-art snow map whose height is -log|ζ(s)|, so every zeta zero is a snowy
+peak, and all of them sit on the critical line Re(s) = ½ (proven in Lean in November 2026 by Alpöge & Claude). Steer
+Constantine's wobbly sledge with the arrow keys (up to boost, down to brake). The real slopes of |ζ| push you around, and
+you grab the bauble on each summit. You score for every bauble, for how close to the summit you pass, for combos and for
+time. Music is a swing chiptune bassline over ii-V-I changes, and the catch chimes walk up and back down a Dorian scale.
 
-* `zero_hunt/zeta.py`: vectorised Euler–Maclaurin ζ(s) plus the festive domain colouring.
-* `zero_hunt/build_assets.py`: regenerates `component/zeta_map.jpg` and `map_meta.json` (needs `mpmath`). Both are committed, so the app itself needs no maths libraries at runtime.
-* `zero_hunt/component/index.html`: the canvas game.
-* Act 2 (prime Christmas lights from the explicit formula) is next.
+* `zero_hunt/zeta.py`: vectorised Euler–Maclaurin ζ(s), plus the terrain bands and contours.
+* `zero_hunt/build_assets.py`: regenerates `component/terrain.png`, `component/height.png` (the physics heightmap)
+  and `map_meta.json` (needs `mpmath`). All three are committed, so the app itself needs no maths libraries at runtime.
+* `zero_hunt/component/index.html`: the canvas game (sprites, physics, audio, CRT overlay).
+* Tuning knobs: `cruise()`, the gravity factor (`-46 * gS`), `CATCH_R`, `GREAT_R` and `PERFECT_R` in `index.html`.
 
 ---
 
