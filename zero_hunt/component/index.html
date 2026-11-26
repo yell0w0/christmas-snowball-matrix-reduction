@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zero Hunt</title>
+<style>
+  :root { --bg:#10002B; --card:#1D0042; --pink:#F050F8; --cyan:#00F0FF; --text:#FFFFFF; --muted:#B9A6E0; --line:#3B1670; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text); overflow:hidden;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #wrap { position:relative; width:100%; max-width:760px; margin:0 auto; }
+  canvas { display:block; width:100%; height:auto; touch-action:none; user-select:none; -webkit-user-select:none;
+    border-radius:18px; outline:none; }
+  #toast { position:absolute; left:33%; top:8%; transform:translate(-50%,-8px); opacity:0; max-width:62%;
+    background:rgba(29,0,66,.96); border:1px solid var(--pink); padding:9px 14px; border-radius:14px;
+    font-size:13px; font-weight:650; text-align:center; box-shadow:0 0 22px rgba(240,80,248,.45);
+    transition:opacity .2s, transform .2s; pointer-events:none; }
+  #toast.show { opacity:1; transform:translate(-50%,0); }
+  #toast.cyan { border-color:var(--cyan); box-shadow:0 0 22px rgba(0,240,255,.4); }
+  .overlay { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(16,0,43,.74); border-radius:18px; backdrop-filter:blur(2px); }
+  .overlay.show { display:flex; }
+  .card { background:var(--card); border:1px solid var(--pink); border-radius:18px; padding:22px 24px;
+    width:min(500px,88%); box-shadow:0 0 40px rgba(240,80,248,.35); text-align:center; }
+  .kicker { color:var(--cyan); font-size:12px; letter-spacing:.18em; text-transform:uppercase; font-weight:800; }
+  .card h2 { margin:6px 0 8px; font-size:27px; text-shadow:0 0 18px rgba(240,80,248,.8); }
+  .card p { color:#DCD0F5; font-size:14px; line-height:1.5; margin:0 0 10px; }
+  .card ol { text-align:left; color:#DCD0F5; font-size:14px; line-height:1.55; margin:0 0 14px; padding-left:22px; }
+  .card b { color:var(--text); }
+  .stats { color:var(--muted); font-size:14px; margin-bottom:12px; }
+  pre { text-align:left; background:#10002B; border:1px solid var(--line); border-radius:10px; padding:10px 12px;
+    font-size:13px; line-height:1.5; white-space:pre-wrap; word-break:break-word; margin:0 0 12px;
+    user-select:text; -webkit-user-select:text; }
+  .btns { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+  .btn { border:1px solid var(--cyan); background:transparent; color:var(--text); border-radius:999px;
+    padding:9px 16px; font-size:14px; font-weight:750; cursor:pointer; font-family:inherit; }
+  .btn.primary { background:var(--pink); border-color:var(--pink); color:#10002B; }
+  .btn:hover { filter:brightness(1.15); }
+  .btn:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  .teaser { margin-top:12px; font-size:12.5px; color:var(--muted); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" tabindex="0" aria-label="Zero Hunt game"></canvas>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <div class="overlay show" id="intro" role="dialog" aria-modal="true" aria-labelledby="introTitle">
+    <div class="card">
+      <div class="kicker">Act 1 · Zero Hunt</div>
+      <h2 id="introTitle">Riemann's Baubles</h2>
+      <p>This glowing map is the <b>Riemann zeta function</b>. Constantine is sledging up it.
+        Hidden in it are <b>zeros</b>: the spots where every colour swirls together.</p>
+      <ol>
+        <li><b>Click a swirl</b> before it slides past Constantine's snowline.</li>
+        <li>Dead-centre clicks score more. Chain catches for a <b>combo</b>.</li>
+        <li>It speeds up as you climb. 30 baubles to hang on the tree.</li>
+      </ol>
+      <p style="font-size:12.5px;color:#B9A6E0">Every one of them sits exactly on the dashed line, Re(s) = ½.
+        That's the Riemann hypothesis, open since 1859 and proven in Lean on 20 Nov 2026.</p>
+      <div class="btns"><button class="btn primary" id="startBtn">🛷 Start the climb</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="end" role="dialog" aria-modal="true" aria-labelledby="endTitle">
+    <div class="card">
+      <div class="kicker" id="endKicker">Summit reached</div>
+      <h2 id="endTitle">Bauble Baron</h2>
+      <div class="stats" id="endStats"></div>
+      <pre id="scorecard"></pre>
+      <div class="btns">
+        <button class="btn primary" id="copyBtn">📋 Copy Slack scorecard</button>
+        <button class="btn" id="againBtn">🛷 Climb again</button>
+      </div>
+      <div class="teaser">🎄 Act 2, coming soon: your baubles' waves light up the prime-number Christmas lights.</div>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+"use strict";
+const W = 680, H = 660;
+const C = { bg:"#10002B", card:"#1D0042", card2:"#2A0B5C", pink:"#F050F8", cyan:"#00F0FF", text:"#FFFFFF",
+            muted:"#B9A6E0", line:"#3B1670", good:"#7CFFB2", bad:"#FF6B8B", gold:"#FFD166" };
+const FONT = 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const N_ZEROS = 30;
+const MAP_W = 450, SNOW_Y = 574, HIT_R = 26;
+const PANEL_X = 464;
+
+// ------------------------------------------------------------ canvas
+const canvas = document.getElementById("game"), ctx = canvas.getContext("2d");
+let scale = 1, dpr = 1;
+function resize() {
+  const cssW = canvas.parentElement.clientWidth || W;
+  scale = cssW / W; dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(W * scale * dpr); canvas.height = Math.round(H * scale * dpr);
+  canvas.style.height = (H * scale) + "px";
+  sendHeight();
+}
+window.addEventListener("resize", resize);
+
+// ------------------------------------------------------------ Streamlit protocol
+function post(type, data) { if (window.parent !== window) window.parent.postMessage(Object.assign({ isStreamlitMessage:true, type }, data), "*"); }
+function sendHeight() { post("streamlit:setFrameHeight", { height: Math.ceil(H * scale) + 4 }); }
+let meta = null;
+const mapImg = new Image(); let mapReady = false;
+mapImg.onload = () => { mapReady = true; };
+mapImg.src = "zeta_map.jpg";
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (!d || d.type !== "streamlit:render") return;
+  if (!meta && d.args && d.args.meta) { meta = d.args.meta; resetGame(); }
+  sendHeight();
+});
+
+// ------------------------------------------------------------ audio
+let actx = null, muted = false;
+function audio() {
+  if (muted) return null;
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { return null; } }
+  if (actx.state === "suspended") actx.resume();
+  return actx;
+}
+function tone(f, dur, type = "sine", vol = .1, when = 0, slide = null) {
+  const a = audio(); if (!a) return;
+  const t0 = a.currentTime + when, o = a.createOscillator(), g = a.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t0); if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
+  g.gain.setValueAtTime(.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + .01); g.gain.exponentialRampToValueAtTime(.0001, t0 + dur);
+  o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + dur + .02);
+}
+function bells(when = 0) { [2637, 3136, 2794].forEach((f, i) => tone(f, .18, "triangle", .025, when + i * .06)); }
+const PENTA = [523, 587, 659, 784, 880, 1047, 1175, 1319, 1568, 1760, 2093];
+const sfx = {
+  catch: (combo) => { const f = PENTA[Math.min(combo, PENTA.length - 1)]; tone(f, .32, "triangle", .1); tone(f * 2, .22, "sine", .035, .02); if (combo && combo % 5 === 0) bells(.08); },
+  miss: () => tone(300, .32, "sine", .09, 0, 140),
+  wrong: () => { tone(200, .09, "square", .035); tone(160, .12, "square", .035, .08); },
+  start: () => { bells(); bells(.25); tone(392, .3, "triangle", .07, .05); tone(523, .4, "triangle", .07, .2); },
+  end: () => [523, 659, 784, 1047, 1319, 1568, 2093].forEach((f, i) => { tone(f, .5, "triangle", .08, i * .08); tone(f * 2, .4, "sine", .02, i * .08); }),
+};
+
+// ------------------------------------------------------------ state
+let zeros = [];       // {t, state: 'up'|'caught'|'missed', slot}
+let tNow = 1, phase = "intro";   // intro | play | end
+let score = 0, combo = 0, bestCombo = 0, caught = 0, missed = 0, clicks = 0, accSum = 0;
+let particles = [], floaters = [], flyers = [], flakes = [];
+let mouse = { x:-1, y:-1 }, hover = null, hits = [];
+let lastFrame = performance.now(), wobble = 0, cheerUntil = 0, sadUntil = 0, tutorial = true;
+
+function resetGame() {
+  zeros = meta.zeros.slice(0, N_ZEROS).map((t, i) => ({ t, state:"up", slot:i }));
+  tNow = 1.0; score = 0; combo = 0; bestCombo = 0; caught = 0; missed = 0; clicks = 0; accSum = 0;
+  flyers = []; floaters = []; tutorial = true;
+}
+function startClimb() {
+  if (!meta) return;
+  resetGame(); phase = "play";
+  document.getElementById("intro").classList.remove("show");
+  document.getElementById("end").classList.remove("show");
+  canvas.focus(); sfx.start();
+}
+const speed = (t) => 0.85 + 0.013 * t;            // t-units per second
+const sigmaToX = (s) => (s - meta.sigma_min) * meta.px_per_sigma;
+const tToY = (t) => SNOW_Y - (t - tNow) * meta.px_per_t;
+const yToT = (y) => tNow + (SNOW_Y - y) / meta.px_per_t;
+
+// ------------------------------------------------------------ toast
+let toastTimer = null;
+function toast(msg, kind) {
+  const el = document.getElementById("toast"); el.textContent = msg; el.className = "show" + (kind === "cyan" ? " cyan" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.className = kind === "cyan" ? "cyan" : ""; }, 2200);
+}
+
+// ------------------------------------------------------------ input
+function toLogical(e) { const r = canvas.getBoundingClientRect(); return { x:(e.clientX - r.left) / r.width * W, y:(e.clientY - r.top) / r.height * H }; }
+function hitAt(p) { for (let n = hits.length - 1; n >= 0; n--) { const h = hits[n]; if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) return h; } return null; }
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.focus(); audio();
+  const p = toLogical(e), h = hitAt(p);
+  if (h) { e.preventDefault(); h.act(); return; }
+  if (phase !== "play" || p.x > MAP_W || p.y > SNOW_Y + 8) return;
+  e.preventDefault(); clicks++;
+  const lineX = sigmaToX(0.5);
+  // nearest uncaught zero on screen
+  let best = null, bestD = 1e9;
+  for (const z of zeros) if (z.state === "up") {
+    const d = Math.hypot(p.x - lineX, p.y - tToY(z.t));
+    if (d < bestD) { bestD = d; best = z; }
+  }
+  if (best && bestD <= HIT_R) return catchZero(best, bestD, p);
+  combo = 0; sadUntil = performance.now() + 700; sfx.wrong();
+  const poleD = Math.hypot(p.x - sigmaToX(1), p.y - tToY(0));
+  if (poleD < 30) toast("That's the pole at s = 1: ζ shoots off to infinity there, not to zero! 🚀");
+  else if (Math.abs(p.x - lineX) > HIT_R) toast("No zero off the line, and since 20 Nov 2026 we know there never will be. 📍");
+  else toast("Right line, wrong height. Wait for the colours to swirl together. 🌀");
+  burst(p.x, p.y, C.bad, 8, 2);
+});
+canvas.addEventListener("pointermove", (e) => {
+  mouse = toLogical(e); const h = hitAt(mouse); hover = h ? h.id : null;
+  canvas.style.cursor = h ? "pointer" : (phase === "play" && mouse.x < MAP_W ? "crosshair" : "default");
+});
+canvas.addEventListener("pointerleave", () => { mouse = { x:-1, y:-1 }; hover = null; });
+window.addEventListener("keydown", (e) => {
+  if ((e.code === "Space" || e.code === "Enter") && phase !== "play") { e.preventDefault(); startClimb(); }
+});
+
+function catchZero(z, d, p) {
+  z.state = "caught"; caught++; combo++; bestCombo = Math.max(bestCombo, combo); tutorial = false;
+  const precision = Math.max(0, 1 - d / HIT_R);
+  accSum += precision;
+  const mult = 1 + 0.25 * Math.min(combo - 1, 8);
+  const pts = Math.round((100 + 60 * precision) * mult);
+  score += pts;
+  const x = sigmaToX(0.5), y = tToY(z.t);
+  burst(x, y, C.cyan, 26, 4); burst(x, y, C.pink, 14, 3); burst(x, y, "#FFFFFF", 10, 5);
+  floaters.push({ x, y: y - 10, text: "+" + pts + (precision > .8 ? " BULLSEYE" : ""), sub: "✓ Re(s) = ½  ·  t ≈ " + z.t.toFixed(2), life: 0 });
+  const slot = treeSlot(z.slot);
+  flyers.push({ x0: x, y0: y, x1: slot.x, y1: slot.y, t0: performance.now(), dur: 650, z });
+  sfx.catch(combo - 1); cheerUntil = performance.now() + 600;
+  if (combo === 10) toast("🔥 10-bauble combo! Constantine is unstoppable.", "cyan");
+}
+function burst(x, y, color, n, sp) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, v = .5 + Math.random() * sp;
+    particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - .6, life: 0, max: 30 + Math.random() * 25, size: 1.5 + Math.random() * 2.5, color, g: .07 }); }
+}
+
+// ------------------------------------------------------------ tree layout (30 slots)
+const TREE = { cx: PANEL_X + 104, top: 300, h: 196, w: 170 };
+function treeSlot(i) {
+  // rows of 3,4,5,5,6,7 from the top
+  const rows = [3, 4, 5, 5, 6, 7]; let r = 0, k = i;
+  while (k >= rows[r]) { k -= rows[r]; r++; }
+  const fy = (r + 0.8) / (rows.length + 0.3);
+  const y = TREE.top + 18 + fy * (TREE.h - 26);
+  const halfW = (TREE.w / 2) * ((y - TREE.top) / TREE.h) * 0.86;
+  const x = TREE.cx - halfW + (rows[r] === 1 ? halfW : (2 * halfW) * (k / (rows[r] - 1)));
+  return { x, y };
+}
+
+// ------------------------------------------------------------ end
+function finish() {
+  phase = "end"; sfx.end(); cheerUntil = performance.now() + 4000;
+  for (let i = 0; i < 160; i++) { const a = Math.random() * Math.PI * 2, v = 2 + Math.random() * 6;
+    particles.push({ x: TREE.cx, y: TREE.top + 80, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 3, life: 0, max: 80 + Math.random() * 60,
+      size: 3 + Math.random() * 3, color: [C.pink, C.cyan, "#FFFFFF", C.gold][i % 4], g: .08, confetti: true, rot: Math.random() * 6, vr: (Math.random() - .5) * .4 }); }
+  const ranks = [[30, "Critical Line Legend"], [26, "Bauble Baron"], [18, "Zero Hunter"], [8, "Snowplough Apprentice"], [0, "Lost in the Strip"]];
+  const rank = ranks.find(r => caught >= r[0])[1];
+  const acc = caught ? Math.round(100 * accSum / caught) : 0;
+  const row = zeros.map(z => z.state === "caught" ? "🟣" : "⚪").join("");
+  const card = "🐙 Data Advent: Zero Hunt 🎄 | " + caught + "/" + N_ZEROS + " zeros · " + score.toLocaleString("en-GB") + " pts · combo ×" + bestCombo + "\n" +
+               row + "\n📍 " + caught + "/" + caught + " on the critical line, just like Alpöge & Claude proved · 🏅 " + rank;
+  document.getElementById("endKicker").textContent = "Summit reached · t ≈ " + Math.round(tNow);
+  document.getElementById("endTitle").textContent = rank;
+  document.getElementById("endStats").textContent = caught + "/" + N_ZEROS + " baubles · " + score.toLocaleString("en-GB") + " pts · best combo ×" + bestCombo + " · aim " + acc + "%";
+  document.getElementById("scorecard").textContent = card;
+  setTimeout(() => { if (phase === "end") { document.getElementById("end").classList.add("show"); document.getElementById("copyBtn").focus(); } }, 1200);
+  post("streamlit:setComponentValue", { value: { caught, total: N_ZEROS, score, best_combo: bestCombo, accuracy: acc, rank, scorecard: card, at: Date.now() }, dataType: "json" });
+}
+document.getElementById("startBtn").addEventListener("click", startClimb);
+document.getElementById("againBtn").addEventListener("click", startClimb);
+document.getElementById("copyBtn").addEventListener("click", async () => {
+  const text = document.getElementById("scorecard").textContent; let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {}
+  if (!ok) { const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); try { ok = document.execCommand("copy"); } catch (_) {} ta.remove(); }
+  if (ok) toast("📋 Copied! Paste it in Slack.", "cyan");
+  else { const s = getSelection(), r = document.createRange(); r.selectNodeContents(document.getElementById("scorecard")); s.removeAllRanges(); s.addRange(r); toast("Selected: press Ctrl/⌘+C to copy."); }
+});
+
+// ------------------------------------------------------------ drawing helpers
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function text(s, x, y, size, color, align = "left", weight = 600, font = FONT) { ctx.font = weight + " " + size + "px " + font; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle"; ctx.fillText(s, x, y); }
+function glow(c, b) { ctx.shadowColor = c; ctx.shadowBlur = b; }
+function noGlow() { ctx.shadowBlur = 0; ctx.shadowColor = "transparent"; }
+function bauble(x, y, r, color, lit) {
+  ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, y - r - 4); ctx.lineTo(x, y - r); ctx.stroke();
+  if (lit) glow(color, 12);
+  const g = ctx.createRadialGradient(x - r * .35, y - r * .35, 1, x, y, r);
+  g.addColorStop(0, lit ? "#FFFFFF" : "#5A4A7A"); g.addColorStop(.35, lit ? color : "#3A2A5A"); g.addColorStop(1, lit ? shadeOf(color) : "#24173D");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); noGlow();
+}
+const shadeOf = (c) => c === C.pink ? "#8A1A92" : c === C.cyan ? "#00707A" : c === C.gold ? "#9A6B00" : "#9A9AC0";
+const baubleColor = (i) => [C.pink, C.cyan, "#FFFFFF", C.gold][i % 4];
+
+// ------------------------------------------------------------ scene
+function drawMap(t) {
+  ctx.save(); rr(0, 0, MAP_W, H, 18); ctx.clip();
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, MAP_W, H);
+  if (mapReady && meta) {
+    const dy = SNOW_Y - (meta.t_max - tNow) * meta.px_per_t;
+    ctx.drawImage(mapImg, 0, dy);
+  }
+  // strip edges + critical line
+  const x0 = sigmaToX(0), x1 = sigmaToX(1), xl = sigmaToX(0.5);
+  ctx.strokeStyle = "rgba(255,255,255,.22)"; ctx.lineWidth = 1; ctx.setLineDash([3, 5]);
+  [x0, x1].forEach(x => { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); });
+  ctx.setLineDash([10, 7]); ctx.lineDashOffset = (tNow * meta.px_per_t) % 17; ctx.lineWidth = 2;
+  glow("#FFFFFF", 10); ctx.strokeStyle = "rgba(255,255,255,.8)";
+  ctx.beginPath(); ctx.moveTo(xl, 0); ctx.lineTo(xl, H); ctx.stroke(); noGlow(); ctx.setLineDash([]);
+  // t ticks
+  for (let tt = Math.ceil((tNow - 3) / 10) * 10; tt < tNow + 14; tt += 10) {
+    const y = tToY(tt); if (y < 14 || y > H - 6) continue;
+    ctx.fillStyle = "rgba(16,0,43,.7)"; rr(6, y - 9, 50, 18, 9); ctx.fill();
+    text("t = " + tt, 31, y, 10, C.muted, "center", 700, MONO);
+    ctx.strokeStyle = "rgba(185,166,224,.35)"; ctx.beginPath(); ctx.moveTo(58, y); ctx.lineTo(70, y); ctx.stroke();
+  }
+  // labels
+  ctx.fillStyle = "rgba(16,0,43,.75)"; rr(xl - 52, 10, 104, 22, 11); ctx.fill();
+  text("Re(s) = ½", xl, 21, 11.5, C.text, "center", 800, MONO);
+  text("Re 0", x0, 44, 9.5, "rgba(255,255,255,.6)", "center", 700); text("Re 1", x1, 44, 9.5, "rgba(255,255,255,.6)", "center", 700);
+  // tutorial hint on first zero
+  if (phase === "play" && tutorial) {
+    const z = zeros[0]; if (z && z.state === "up") {
+      const y = tToY(z.t); if (y > 30) {
+        const p = .5 + .5 * Math.sin(t / 180);
+        ctx.strokeStyle = "rgba(255,255,255," + (.4 + .5 * p) + ")"; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(xl, y, HIT_R + 4 + p * 6, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = "rgba(16,0,43,.85)"; rr(xl + 38, y - 13, 150, 26, 13); ctx.fill();
+        text("← click the swirl!", xl + 113, y, 12, C.text, "center", 800);
+      }
+    }
+  }
+  // caught markers stay on the map as a little ✓ ring
+  for (const z of zeros) if (z.state !== "up") {
+    const y = tToY(z.t); if (y < -20 || y > H + 20) continue;
+    ctx.lineWidth = 2; ctx.strokeStyle = z.state === "caught" ? C.good : C.bad;
+    ctx.beginPath(); ctx.arc(xl, y, 9, 0, Math.PI * 2); ctx.stroke();
+    text(z.state === "caught" ? "✓" : "✕", xl, y + 0.5, 10, z.state === "caught" ? C.good : C.bad, "center", 900);
+  }
+  // snowline
+  const grd = ctx.createLinearGradient(0, SNOW_Y, 0, H);
+  grd.addColorStop(0, "rgba(16,0,43,.25)"); grd.addColorStop(1, "rgba(16,0,43,.92)");
+  ctx.fillStyle = grd; ctx.fillRect(0, SNOW_Y, MAP_W, H - SNOW_Y);
+  ctx.strokeStyle = "rgba(240,80,248,.9)"; ctx.lineWidth = 2; ctx.setLineDash([6, 6]); glow(C.pink, 8);
+  ctx.beginPath(); ctx.moveTo(0, SNOW_Y); ctx.lineTo(MAP_W, SNOW_Y); ctx.stroke(); ctx.setLineDash([]); noGlow();
+  text("SNOWLINE · catch them above here", 14, SNOW_Y - 10, 9.5, C.pink, "left", 800);
+  drawConstantine(xl, SNOW_Y + 40, t);
+  ctx.restore();
+}
+function drawConstantine(x, y, t) {
+  const now = performance.now(), cheer = now < cheerUntil, sad = now < sadUntil;
+  const bob = Math.sin(t / 160) * 1.5 - (cheer ? Math.abs(Math.sin(t / 90)) * 6 : 0);
+  ctx.save(); ctx.translate(x, y + bob);
+  // sled
+  ctx.strokeStyle = C.gold; ctx.lineWidth = 3; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(-34, 22); ctx.lineTo(30, 22); ctx.quadraticCurveTo(42, 22, 40, 12); ctx.stroke();
+  ctx.fillStyle = "#B3122E"; rr(-30, 8, 62, 12, 4); ctx.fill();
+  // tentacles
+  for (let i = 0; i < 5; i++) { const a = -0.8 + i * .4, w = Math.sin(t / 200 + i) * 3;
+    ctx.strokeStyle = i % 2 ? "#D63FDE" : C.pink; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(Math.sin(a) * 16, 6);
+    ctx.quadraticCurveTo(Math.sin(a) * 26 + w, 14, Math.sin(a) * 30 - w, 18); ctx.stroke(); }
+  // head
+  glow(C.pink, 16); const hg = ctx.createRadialGradient(-6, -12, 3, 0, -4, 26);
+  hg.addColorStop(0, "#FF9CFF"); hg.addColorStop(1, "#C42DCE"); ctx.fillStyle = hg;
+  ctx.beginPath(); ctx.ellipse(0, -4, 22, 20, 0, 0, Math.PI * 2); ctx.fill(); noGlow();
+  for (const ex of [-8, 8]) { ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.ellipse(ex, -8, 5, sad ? 3 : 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.bg; ctx.beginPath(); ctx.arc(ex, -10, 2.6, 0, Math.PI * 2); ctx.fill(); }
+  ctx.strokeStyle = C.bg; ctx.lineWidth = 2; ctx.beginPath();
+  if (sad) ctx.arc(0, 8, 4, Math.PI * 1.15, Math.PI * 1.85); else ctx.arc(0, 2, cheer ? 6 : 4, .15 * Math.PI, .85 * Math.PI); ctx.stroke();
+  // hat
+  ctx.rotate(.2); ctx.fillStyle = "#E8264A"; ctx.beginPath(); ctx.moveTo(-16, -20); ctx.quadraticCurveTo(0, -46, 18, -36); ctx.lineTo(14, -20); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#fff"; rr(-18, -23, 36, 7, 3.5); ctx.fill(); ctx.beginPath(); ctx.arc(18, -36, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function drawPanel(t) {
+  const x = PANEL_X, w = W - PANEL_X - 10;
+  rr(x, 0, w, H, 18); ctx.fillStyle = "rgba(29,0,66,.92)"; ctx.fill(); ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.stroke();
+  text("ACT 1 · ZERO HUNT", x + 16, 22, 10.5, C.pink, "left", 900);
+  text("Riemann's Baubles", x + 16, 42, 17, C.text, "left", 850);
+  // mute
+  const mb = { id:"mute", x: x + w - 40, y: 12, w: 30, h: 30, act: () => { muted = !muted; } };
+  rr(mb.x, mb.y, mb.w, mb.h, 15); ctx.fillStyle = hover === "mute" ? C.card2 : C.card; ctx.fill(); ctx.strokeStyle = C.line; ctx.stroke();
+  text(muted ? "🔇" : "🔊", mb.x + 15, mb.y + 16, 14, C.text, "center"); hits.push(mb);
+  // score block
+  rr(x + 12, 62, w - 24, 64, 12); ctx.fillStyle = C.bg; ctx.fill(); ctx.strokeStyle = C.cyan; ctx.stroke();
+  text("SCORE", x + 26, 78, 9.5, C.cyan, "left", 900);
+  text(score.toLocaleString("en-GB"), x + 26, 104, 26, C.text, "left", 900, MONO);
+  const mult = 1 + .25 * Math.max(0, Math.min(combo - 1, 8));
+  text("COMBO", x + w - 26, 78, 9.5, C.pink, "right", 900);
+  if (combo > 1) glow(C.pink, 12);
+  text("×" + combo, x + w - 26, 104, 22, combo > 1 ? C.pink : C.muted, "right", 900, MONO); noGlow();
+  // stats
+  const stat = (lbl, val, yy, col) => { text(lbl, x + 18, yy, 11, C.muted, "left", 700); text(val, x + w - 18, yy, 12.5, col || C.text, "right", 800, MONO); };
+  stat("Baubles caught", caught + " / " + N_ZEROS, 146, C.good);
+  stat("Slipped past", String(missed), 166, missed ? C.bad : C.text);
+  stat("Height on the line", "t ≈ " + tNow.toFixed(1), 186);
+  stat("Combo bonus", "×" + mult.toFixed(2) + " pts", 206, combo > 1 ? C.pink : C.muted);
+  // progress bar of the climb
+  const prog = meta ? Math.min(1, Math.max(0, (tNow - 1) / (zeros[zeros.length - 1].t + 1.5 - 1))) : 0;
+  rr(x + 18, 222, w - 36, 7, 3.5); ctx.fillStyle = C.bg; ctx.fill();
+  rr(x + 18, 222, Math.max(7, (w - 36) * prog), 7, 3.5); ctx.fillStyle = C.cyan; ctx.fill();
+  text("Constantine's sledge", x + 18, 240, 9.5, C.muted, "left", 600);
+  text("summit 🏔", x + w - 18, 240, 9.5, C.muted, "right", 600);
+  // the tree
+  drawTree(t);
+  // footer facts
+  text("Every bauble: Re(s) = ½ ✓", x + w / 2, 538, 11.5, C.good, "center", 800);
+  text("Riemann hypothesis · posed 1859", x + w / 2, 558, 10.5, C.muted, "center", 600);
+  text("proven 20 Nov 2026, Lean-verified", x + w / 2, 574, 10.5, C.muted, "center", 600);
+  text("(Alpöge & Claude)", x + w / 2, 590, 10.5, C.muted, "center", 600);
+  if (phase !== "play") {
+    const b = { id: "go", x: x + 18, y: 610, w: w - 36, h: 34, act: startClimb };
+    rr(b.x, b.y, b.w, b.h, 17); ctx.fillStyle = C.pink; if (hover === "go") glow(C.pink, 14); ctx.fill(); noGlow();
+    text(phase === "end" ? "🛷 Climb again" : "🛷 Start the climb", b.x + b.w / 2, b.y + 17, 13, C.bg, "center", 900); hits.push(b);
+  } else text("Click swirls on the map ←", x + w / 2, 626, 11, C.cyan, "center", 700);
+}
+function drawTree(t) {
+  const { cx, top, h, w } = TREE;
+  // star
+  const lit = caught > 0;
+  ctx.save(); ctx.translate(cx, top - 4); ctx.rotate(Math.sin(t / 900) * .1);
+  if (phase === "end" || caught >= 10) glow(C.gold, 16 + 6 * Math.sin(t / 200));
+  ctx.fillStyle = lit ? C.gold : "#5A4A7A"; ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const r = i % 2 ? 5 : 12, a = -Math.PI / 2 + i * Math.PI / 5; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+  ctx.closePath(); ctx.fill(); noGlow(); ctx.restore();
+  // three tiers
+  for (let k = 0; k < 3; k++) {
+    const ty = top + 6 + k * h * .27, by = top + h * (.42 + k * .28), hw = w * (.28 + k * .12);
+    const g = ctx.createLinearGradient(0, ty, 0, by); g.addColorStop(0, "#1F7A5A"); g.addColorStop(1, "#0D4A3A");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(cx, ty); ctx.quadraticCurveTo(cx - hw * .5, by - 12, cx - hw, by);
+    ctx.quadraticCurveTo(cx, by + 8, cx + hw, by); ctx.quadraticCurveTo(cx + hw * .5, by - 12, cx, ty); ctx.fill();
+  }
+  ctx.fillStyle = "#5A3A20"; ctx.fillRect(cx - 9, top + h + 2, 18, 16);
+  // garland of lights (twinkle)
+  for (let i = 0; i < 18; i++) { const fy = i / 18, y = top + 20 + fy * (h - 20), hw = (w / 2) * ((y - top) / h) * .9;
+    const xx = cx + Math.sin(i * 2.3) * hw; const on = (Math.floor(t / 400) + i) % 3 === 0;
+    ctx.fillStyle = on ? "rgba(255,255,255,.9)" : "rgba(255,255,255,.18)"; ctx.beginPath(); ctx.arc(xx, y, 1.6, 0, Math.PI * 2); ctx.fill(); }
+  // bauble slots
+  zeros.forEach((z, i) => {
+    const s = treeSlot(i);
+    const landed = z.state === "caught" && !flyers.some(f => f.z === z);
+    if (landed) bauble(s.x, s.y + Math.sin(t / 500 + i) * .8, 6.5, baubleColor(i), true);
+    else if (z.state === "missed") { ctx.strokeStyle = "rgba(255,107,139,.5)"; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI * 2); ctx.stroke(); }
+    else { ctx.fillStyle = "rgba(255,255,255,.14)"; ctx.beginPath(); ctx.arc(s.x, s.y, 2, 0, Math.PI * 2); ctx.fill(); }
+  });
+}
+function drawFlyers(now) {
+  flyers = flyers.filter(f => {
+    const p = Math.min(1, (now - f.t0) / f.dur), e = 1 - Math.pow(1 - p, 3);
+    const x = f.x0 + (f.x1 - f.x0) * e, y = f.y0 + (f.y1 - f.y0) * e - Math.sin(Math.PI * p) * 80;
+    bauble(x, y, 7, baubleColor(f.z.slot), true);
+    if (Math.random() < .6) particles.push({ x, y, vx: 0, vy: .2, life: 0, max: 18, size: 1.8, color: baubleColor(f.z.slot), g: 0 });
+    if (p >= 1) { burst(f.x1, f.y1, baubleColor(f.z.slot), 10, 2); return false; }
+    return true;
+  });
+}
+function drawFloaters() {
+  floaters = floaters.filter(f => {
+    f.life++; const a = 1 - f.life / 70; if (a <= 0) return false;
+    ctx.globalAlpha = a; glow(C.cyan, 10);
+    text(f.text, f.x + 34, f.y - f.life * .5, 15, C.text, "left", 900, MONO); noGlow();
+    text(f.sub, f.x + 34, f.y + 16 - f.life * .5, 10.5, C.good, "left", 700, MONO);
+    ctx.globalAlpha = 1; return true;
+  });
+}
+function drawParticles() {
+  const keep = [];
+  for (const p of particles) { p.life++; p.x += p.vx; p.y += p.vy; p.vy += p.g || 0; p.vx *= .99;
+    const a = 1 - p.life / p.max; if (a <= 0) continue; ctx.globalAlpha = a; ctx.fillStyle = p.color;
+    if (p.confetti) { p.rot += p.vr; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillRect(-p.size / 2, -p.size, p.size, p.size * 2); ctx.restore(); }
+    else { ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill(); }
+    keep.push(p); }
+  ctx.globalAlpha = 1; particles = keep.length > 800 ? keep.slice(-800) : keep;
+}
+function drawSnow(t) {
+  for (const f of flakes) { f.y += f.vy; f.x += Math.sin(t / 1000 * f.wob + f.ph) * .3;
+    if (f.y > H + 4) { f.y = -4; f.x = Math.random() * W; }
+    ctx.globalAlpha = f.a; ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2); ctx.fill(); }
+  ctx.globalAlpha = 1;
+}
+for (let i = 0; i < 70; i++) flakes.push({ x: Math.random() * W, y: Math.random() * H, r: .6 + Math.random() * 1.6, vy: .3 + Math.random() * .7, a: .25 + Math.random() * .5, wob: .5 + Math.random(), ph: Math.random() * 6 });
+
+// ------------------------------------------------------------ loop
+function update(dt) {
+  if (phase !== "play") return;
+  tNow += speed(tNow) * dt;
+  for (const z of zeros) if (z.state === "up" && tToY(z.t) > SNOW_Y + 6) {
+    z.state = "missed"; missed++; combo = 0; sadUntil = performance.now() + 800; sfx.miss();
+    burst(sigmaToX(.5), SNOW_Y, C.bad, 12, 2.5);
+    if (z.slot === 0) toast("Missed one! Click where all the colours meet, on the dashed line.");
+  }
+  if (tNow > zeros[zeros.length - 1].t + 1.5) finish();
+}
+function frame(t) {
+  const now = performance.now(), dt = Math.min(.05, (now - lastFrame) / 1000); lastFrame = now;
+  ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0); hits = [];
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  if (!meta) { text("❄️ Loading the zeta function…", W / 2, H / 2, 18, C.text, "center", 800);
+    text("(run with: streamlit run zero_hunt/app.py)", W / 2, H / 2 + 28, 12, C.muted, "center", 600); requestAnimationFrame(frame); return; }
+  update(dt);
+  drawMap(t); drawPanel(t); drawFlyers(now); drawFloaters(); drawParticles(); drawSnow(t);
+  requestAnimationFrame(frame);
+}
+resize();
+post("streamlit:componentReady", { apiVersion: 1 });
+requestAnimationFrame(frame);
+window.__zh = { state: () => ({ tNow, phase, score, caught, missed, combo, zeros }), start: startClimb, catchAt: (i) => { const z = zeros[i]; if (z && z.state === "up") catchZero(z, 0, null); } };
+})();
+</script>
+</body>
+</html>

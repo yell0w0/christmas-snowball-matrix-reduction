@@ -1,4 +1,21 @@
-# 🐙 Constantine's Snowball Tensor Fight
+# 🐙 Data Advent: Constantine's maths games
+
+Two festive Streamlit mini-games for the Octopus Energy Data Advent calendar.
+
+## 🎄 Zero Hunt (Riemann hypothesis): `streamlit run zero_hunt/app.py`
+
+Constantine sledges up the critical line of the Riemann zeta function. Click the swirls (the zeros) before they slide
+past the snowline, build combos, and hang 30 baubles on the tree. Every zero sits on Re(s) = ½, as proven in Lean in
+November 2026 (Alpöge & Claude). The ending gives you a Slack scorecard.
+
+* `zero_hunt/zeta.py`: vectorised Euler–Maclaurin ζ(s) plus the festive domain colouring.
+* `zero_hunt/build_assets.py`: regenerates `component/zeta_map.jpg` and `map_meta.json` (needs `mpmath`). Both are committed, so the app itself needs no maths libraries at runtime.
+* `zero_hunt/component/index.html`: the canvas game.
+* Act 2 (prime Christmas lights from the explicit formula) is next.
+
+---
+
+## ❄️ Constantine's Snowball Tensor Fight (matrix multiplication): `streamlit run app.py`
 
 A festive Streamlit mini-game for the Octopus Energy Data Advent calendar. Every snowball throw is **one
 multiplication**. Clear the board in fewer throws than the textbook and you've found a faster

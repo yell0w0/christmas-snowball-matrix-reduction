@@ -1,1 +1,3 @@
 streamlit>=1.36
+numpy
+mpmath  # only needed to rebuild zero_hunt assets / run tests
