@@ -21,7 +21,7 @@
 "use strict";
 // =================================================================== constants
 const W = 680, H = 660;
-const PF_W = 450;                 // playfield width (terrain is 150 art px x3)
+const PF_W = 450;                 // playfield width on screen
 const SLED_Y = 392;               // the sled sits a bit above centre
 const LINE_X = 225;               // sigma = 1/2
 const CATCH_R = 33, GREAT_R = 15, PERFECT_R = 6;
@@ -235,6 +235,7 @@ function startGame() {
   canvas.focus();
 }
 const toY = (t) => SLED_Y - (t - tNow) * meta.art_px_per_t * PX;
+const xOfSigma = (s) => (s - meta.sigma_min) * meta.art_px_per_sigma * PX;
 const sigmaOfX = (x) => meta.sigma_min + x / (meta.art_px_per_sigma * PX);
 
 // bilinear height in [h_min, h_max]
@@ -279,7 +280,8 @@ canvas.addEventListener("pointerup", () => { pointerSteer = 0; });
 canvas.addEventListener("pointercancel", () => { pointerSteer = 0; });
 
 // =================================================================== game logic
-function cruise(t) { return 1.05 + 0.011 * t; }
+// t-units per second; the zoomed-in map makes this ~1.4x faster on screen than before
+function cruise(t) { return 0.82 + 0.0095 * t; }
 function update(dt) {
   if (phase === "countdown") {
     const before = Math.ceil(countdown); countdown -= dt; const after = Math.ceil(countdown);
@@ -301,7 +303,8 @@ function update(dt) {
   tNow += vt * dt;
   // lateral: steering vs gravity sliding you off the hills
   const steer = (keys.left ? -1 : 0) + (keys.right ? 1 : 0) + pointerSteer;
-  const gravity = Math.max(-620, Math.min(620, -46 * gS));
+  const zoom = meta.art_px_per_sigma * PX / 150;          // slope push scales with the zoom
+  const gravity = Math.max(-620 * zoom, Math.min(620 * zoom, -46 * zoom * gS));
   vx += (steer * 1150 + gravity) * dt;
   vx *= Math.exp(-2.4 * dt);
   sx += vx * dt;
@@ -353,7 +356,7 @@ function burst(x, y, cols, n, sp) {
 function rankFor(n) { return n >= 30 ? "CRITICAL LINE LEGEND" : n >= 26 ? "BAUBLE BARON" : n >= 18 ? "PEAK BAGGER" : n >= 8 ? "SNOWPLOUGH APPRENTICE" : "LOST IN THE STRIP"; }
 function finish() {
   phase = "end"; musicStop(); sfx.fanfare();
-  timeBonus = Math.max(0, Math.round((95 - elapsed) * 25));
+  timeBonus = Math.max(0, Math.round((120 - elapsed) * 25));
   score += timeBonus;
   if (score > hiScore) { hiScore = score; newHi = true; try { localStorage.setItem("zerohunt_hi", String(hiScore)); } catch (_) {} }
   for (let i = 0; i < 4; i++) setTimeout(() => burst(60 + Math.random() * 330, 120 + Math.random() * 200, [COL.pink, COL.cyan, COL.gold, COL.white], 40, 260), i * 250);
@@ -421,7 +424,8 @@ function drawTerrain(t) {
   ctx.fillStyle = "rgba(0,240,255,0.35)";
   for (let y = -12 + off; y < H; y += 12) ctx.fillRect(LINE_X - 1, y, 3, 6);
   ctx.fillStyle = "rgba(240,80,248,0.18)";
-  for (let y = -24 + off; y < H; y += 24) { ctx.fillRect(150 - 1, y, 3, 3); ctx.fillRect(300 - 1, y, 3, 3); }
+  const e0 = Math.round(xOfSigma(0)), e1 = Math.round(xOfSigma(1));
+  for (let y = -24 + off; y < H; y += 24) { ctx.fillRect(e0 - 1, y, 3, 3); ctx.fillRect(e1 - 1, y, 3, 3); }
   // trail
   for (let i = 0; i < trail.length; i++) {
     const p = trail[i], y = toY(p.t); if (y > H || y < SLED_Y) continue;
@@ -489,7 +493,7 @@ function drawPanel(t) {
   row("TIME", fmtTime(elapsed), 206, COL.white);
   // speed bar (segmented)
   txt("SPEED", L, 240, 8, COL.grey);
-  const segs = 10, sp = phase === "play" ? Math.min(1, vt / 3.2) : 0;
+  const segs = 10, sp = phase === "play" ? Math.min(1, vt / 2.6) : 0;
   for (let i = 0; i < segs; i++) { ctx.fillStyle = i < Math.round(sp * segs) ? (i > 6 ? COL.pink : COL.cyan) : COL.line; ctx.fillRect(L + i * 18, 254, 14, 9); }
   drawTree(x + w / 2, 286, t);
   // controls

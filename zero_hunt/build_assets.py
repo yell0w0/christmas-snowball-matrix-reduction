@@ -23,8 +23,8 @@ def main() -> None:
     Image.fromarray(q, mode="L").save(OUT / "height.png", optimize=True)
     zeros = [z for z in zeta.first_zeros(40) if z < zeta.ART_T_MAX - 4]
     meta = {
-        "sigma_min": zeta.SIGMA_MIN,
-        "sigma_max": zeta.SIGMA_MAX,
+        "sigma_min": zeta.ART_SIGMA_MIN,
+        "sigma_max": zeta.ART_SIGMA_MAX,
         "t_min": zeta.ART_T_MIN,
         "t_max": zeta.ART_T_MAX,
         "art_scale": zeta.ART_SCALE,

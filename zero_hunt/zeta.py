@@ -100,9 +100,10 @@ def first_zeros(n: int) -> list[float]:
 # Rendered at "art" resolution (one art pixel = ART_SCALE screen pixels).
 # ---------------------------------------------------------------------------
 ART_SCALE = 3
+ART_SIGMA_MIN, ART_SIGMA_MAX = -0.5, 1.5   # zoomed in: the strip fills more of the screen
 ART_T_MIN, ART_T_MAX = -3.0, 118.0
-ART_PX_PER_T = 16          # art pixels per unit of t (48 screen px)
-ART_PX_PER_SIGMA = 50      # art pixels per unit of sigma (150 screen px)
+ART_PX_PER_T = 28          # art pixels per unit of t (84 screen px): peaks further apart
+ART_PX_PER_SIGMA = 75      # art pixels per unit of sigma (225 screen px): wider mountains
 H_MIN, H_MAX = -4.0, 3.0   # height clip range (stored in the heightmap)
 
 # (upper edge of band, fill colour, contour colour)
@@ -121,9 +122,9 @@ BANDS = [
 
 
 def terrain_heights() -> np.ndarray:
-    w = int(round((SIGMA_MAX - SIGMA_MIN) * ART_PX_PER_SIGMA))
+    w = int(round((ART_SIGMA_MAX - ART_SIGMA_MIN) * ART_PX_PER_SIGMA))
     h = int(round((ART_T_MAX - ART_T_MIN) * ART_PX_PER_T))
-    sig = SIGMA_MIN + (np.arange(w) + 0.5) / ART_PX_PER_SIGMA
+    sig = ART_SIGMA_MIN + (np.arange(w) + 0.5) / ART_PX_PER_SIGMA
     t = ART_T_MAX - (np.arange(h) + 0.5) / ART_PX_PER_T
     Z = zeta_grid(sig[None, :] + 1j * t[:, None])
     return np.clip(-np.log(np.abs(Z) + 1e-12), H_MIN, H_MAX)
