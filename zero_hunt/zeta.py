@@ -100,7 +100,7 @@ def first_zeros(n: int) -> list[float]:
 # Rendered at "art" resolution (one art pixel = ART_SCALE screen pixels).
 # ---------------------------------------------------------------------------
 ART_SCALE = 3
-ART_SIGMA_MIN, ART_SIGMA_MAX = -0.5, 1.5   # zoomed in: the strip fills more of the screen
+ART_SIGMA_MIN, ART_SIGMA_MAX = -1.2, 2.2   # world wider than the screen; past the edges is the abyss
 ART_T_MIN, ART_T_MAX = -3.0, 118.0
 ART_PX_PER_T = 28          # art pixels per unit of t (84 screen px): peaks further apart
 ART_PX_PER_SIGMA = 75      # art pixels per unit of sigma (225 screen px): wider mountains

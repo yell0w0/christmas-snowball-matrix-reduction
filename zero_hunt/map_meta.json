@@ -1,6 +1,6 @@
 {
- "sigma_min": -0.5,
- "sigma_max": 1.5,
+ "sigma_min": -1.2,
+ "sigma_max": 2.2,
  "t_min": -3.0,
  "t_max": 118.0,
  "art_scale": 3,
@@ -8,7 +8,7 @@
  "art_px_per_sigma": 75,
  "h_min": -4.0,
  "h_max": 3.0,
- "width": 150,
+ "width": 255,
  "height": 3388,
  "zeros": [
   14.134725,
