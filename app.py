@@ -242,6 +242,26 @@ Since then the race has kept going: human-computer "flip graph" searches, AI sys
 of newer machine-found schemes. The game you just played is the same game — just small enough to win before
 your mince pie goes cold.
 
+### 2026: OpenAI goes after the big number, ω
+
+Strassen's trick, applied recursively, gives an algorithm costing about $n^{\omega}$ operations. The
+**matrix multiplication exponent ω** is the best power achievable *as matrices get huge*. The textbook gives
+3, Strassen gives 2.81, and decades of work had crept down to roughly **2.371**. Nobody can go below 2,
+because you have to at least read all $n^2$ numbers.
+
+- **October 2026:** an OpenAI preprint claimed **ω ≤ 9/4 = 2.25** — the biggest drop in decades — and shipped
+  a **Lean** (machine-checked) formalisation alongside it. Academic groups have since written independent
+  expositions of the proof.
+- **November 2026:** a follow-up OpenAI preprint claims a **matching lower bound**, which would make
+  **ω exactly 9/4**. That lower bound is for a specific model of computation (formal arithmetic circuits
+  counting multiplication/division gates), and at the time of writing it is **not yet peer reviewed or
+  independently checked**.
+
+How does that connect to snowballs? The asymptotic results are still built from tensors and rank-1 pieces,
+just with huge tensors and "border rank" (getting arbitrarily close to zero rather than exactly zero) instead
+of exact clears on a tiny board. Strassen's 7 and the new 9/4 are the same story told at two very different
+scales.
+
 ### Level 2: why is 4 *provably* optimal?
 
 Squash the 3-D board flat three different ways (A×(B,C), B×(A,C), C×(A,B)). Each throw can raise the
