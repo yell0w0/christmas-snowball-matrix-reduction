@@ -154,7 +154,7 @@ const crt = document.createElement("canvas"); crt.width = W; crt.height = H;
 // Harmony follows Jazzology (Rawlins & Bahha): rootless type A/B voicings with
 // A<->B switches on root motion by 4ths/5ths, Garland-style right-hand block chords,
 // So What voicings planed diatonically for the modal tune, swing comping rhythms.
-let actx = null, master = null, musicBus = null, verbIn = null, pianoWave = null, muted = false;
+let actx = null, master = null, musicBus = null, rhodesBus = null, verbIn = null, pianoWave = null, muted = false;
 function buildGraph(ctx) {
   actx = ctx;
   master = ctx.createGain(); master.gain.value = muted ? 0 : 1;
@@ -162,6 +162,12 @@ function buildGraph(ctx) {
   comp.threshold.value = -16; comp.knee.value = 14; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.25;
   master.connect(comp).connect(ctx.destination);
   musicBus = ctx.createGain(); musicBus.gain.value = 1; musicBus.connect(master);
+  // Rhodes: its own bus with the classic stereo tremolo (auto-pan) and a gentle low-pass for warmth
+  rhodesBus = ctx.createGain(); rhodesBus.gain.value = 1;
+  const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : ctx.createGain();
+  const warm = ctx.createBiquadFilter(); warm.type = "lowpass"; warm.frequency.value = 4800; warm.Q.value = 0.4;
+  rhodesBus.connect(warm).connect(pan); pan.connect(musicBus);
+  if (pan.pan) { const lfo = ctx.createOscillator(), depth = ctx.createGain(); lfo.frequency.value = 4.2; depth.gain.value = 0.32; lfo.connect(depth).connect(pan.pan); lfo.start(); }
   const conv = ctx.createConvolver(); conv.buffer = roomImpulse(ctx, 1.7);
   const verbLP = ctx.createBiquadFilter(); verbLP.type = "lowpass"; verbLP.frequency.value = 4200;
   verbIn = ctx.createGain(); verbIn.gain.value = 0.2;
@@ -218,7 +224,7 @@ function pianoNote(midi, t0, vel = 0.5, dur = 0.8) {
   const a = actx; if (!a || !pianoWave) return;
   dur = Math.max(0.16, dur);
   const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48));
-  const peak = 0.016 + 0.064 * vel * vel;
+  const peak = 0.012 + 0.048 * vel * vel;
   const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.3;
   lp.frequency.setValueAtTime(Math.min(13000, f * (2.5 + 9 * vel) + 500), t0);
   lp.frequency.exponentialRampToValueAtTime(Math.max(f * 1.6, 420), t0 + 0.3 + 0.9 * low);
@@ -235,8 +241,39 @@ function pianoNote(midi, t0, vel = 0.5, dur = 0.8) {
   lp.connect(g); g.connect(musicBus); g.connect(verbIn);
   noiseBurst(t0, 0.02, 0.006 * vel, "lowpass", 1800, 0.5, musicBus);      // felt on string
 }
+// Rhodes: 2-operator FM (1:1 ratio, index falls quickly = the "bark"), plus the short tine partial
+function rhodesNote(midi, t0, vel = 0.5, dur = 0.8) {
+  const a = actx; if (!a || !rhodesBus) return;
+  dur = Math.max(0.16, dur);
+  const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48)), peak = 0.015 + 0.045 * vel;
+  const car = a.createOscillator(), mod = a.createOscillator(), idx = a.createGain(), g = a.createGain();
+  car.frequency.value = f; mod.frequency.value = f;
+  const I = f * (0.4 + 2.6 * vel * vel);                                   // harder = more bark
+  idx.gain.setValueAtTime(I, t0); idx.gain.setTargetAtTime(f * 0.25, t0 + 0.005, 0.12 + 0.1 * low);
+  mod.connect(idx).connect(car.frequency);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.003);
+  g.gain.setTargetAtTime(peak * 0.55, t0 + 0.004, 0.25);
+  g.gain.setTargetAtTime(0.0001, t0 + 0.3, 0.9 + 1.4 * low);
+  g.gain.setTargetAtTime(0.0001, t0 + dur, 0.1);
+  car.connect(g); g.connect(rhodesBus); const v = a.createGain(); v.gain.value = 0.5; g.connect(v).connect(verbIn);
+  const tine = a.createOscillator(), tg = a.createGain(); tine.frequency.value = f * 7.02;
+  tg.gain.setValueAtTime(0.0001, t0); tg.gain.linearRampToValueAtTime(peak * 0.12 * vel, t0 + 0.002); tg.gain.setTargetAtTime(0.0001, t0 + 0.003, 0.025);
+  tine.connect(tg).connect(rhodesBus);
+  [car, mod, tine].forEach(o => { o.start(t0); o.stop(t0 + dur + 0.8); });
+}
+// per-tune keyboard: piano or Rhodes (remembered per tune)
+const KEYS_DEFAULT = { swing: "piano", blues: "rhodes", modal: "rhodes" };
+let keysPref = Object.assign({}, KEYS_DEFAULT);
+try { Object.assign(keysPref, JSON.parse(localStorage.getItem("zerohunt_keys") || "{}")); } catch (_) {}
+const keysName = () => keysPref[track().id] === "rhodes" ? "RHODES" : "PIANO";
+function keyNote(midi, t0, vel, dur) { (keysPref[track().id] === "rhodes" ? rhodesNote : pianoNote)(midi, t0, vel, dur); }
+function switchKeys() {
+  keysPref[track().id] = keysPref[track().id] === "rhodes" ? "piano" : "rhodes";
+  try { localStorage.setItem("zerohunt_keys", JSON.stringify(keysPref)); } catch (_) {}
+  if (audio()) { const c = track().timeline[0]; pianoChord(c.lh, actx.currentTime + 0.02, 0.45, 0.9); }   // audition
+}
 function pianoChord(notes, t0, vel, dur, roll = 0.006) {
-  notes.slice().sort((a, b) => a - b).forEach((m, i) => pianoNote(m, t0 + i * roll + Math.random() * 0.003, Math.max(0.05, vel + (Math.random() - 0.5) * 0.08), dur));
+  notes.slice().sort((a, b) => a - b).forEach((m, i) => keyNote(m, t0 + i * roll + Math.random() * 0.003, Math.max(0.05, vel + (Math.random() - 0.5) * 0.08), dur));
 }
 function epiano(midi, t0, vol = 0.06, dur = 0.6) { pianoNote(midi, t0, Math.min(0.9, vol * 7), dur); }   // UI blips
 function upright(midi, t0, dur, vel = 0.75) {
@@ -258,16 +295,22 @@ function upright(midi, t0, dur, vel = 0.75) {
   o1.start(t0); o2.start(t0); o1.stop(t0 + dur + 0.3); o2.stop(t0 + dur + 0.3);
   noiseBurst(t0, 0.025, 0.02 * vel, "bandpass", f * 5, 1.2, musicBus);    // finger pluck
 }
-const RIDE_HZ = [3120, 4680, 5235, 6370, 7840, 9210];
+// ride: a darker noise wash (band-limited, slow decay) with a soft inharmonic bell on the stick
 function ride(t0, vel = 0.5) {
   const a = actx; if (!a) return;
-  const hp = a.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 5200;
-  const g = a.createGain(), peak = 0.0025 + 0.005 * vel;
+  const src = a.createBufferSource(); src.buffer = noiseBuf(1.1);
+  const hp = a.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 2600;
+  const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 7800; lp.Q.value = 0.3;
+  const g = a.createGain(), peak = 0.011 + 0.018 * vel;
   g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.002);
-  g.gain.setTargetAtTime(0.0001, t0 + 0.003, 0.22);
-  RIDE_HZ.forEach(fq => { const o = a.createOscillator(); o.type = "square"; o.frequency.value = fq * (0.995 + Math.random() * 0.01); o.connect(hp); o.start(t0); o.stop(t0 + 1.0); });
-  hp.connect(g); g.connect(musicBus); const v = a.createGain(); v.gain.value = 0.4; g.connect(v).connect(verbIn);
-  noiseBurst(t0, 0.03, 0.006 * vel, "bandpass", 8500, 1.5, musicBus);      // stick ping
+  g.gain.setTargetAtTime(peak * 0.35, t0 + 0.004, 0.03); g.gain.setTargetAtTime(0.0001, t0 + 0.04, 0.35);
+  src.connect(hp).connect(lp).connect(g); g.connect(musicBus); const v = a.createGain(); v.gain.value = 0.3; g.connect(v).connect(verbIn);
+  src.start(t0);
+  [2410, 3530, 4870].forEach((fq, i) => {                                  // the "ping"
+    const o = a.createOscillator(), og = a.createGain(); o.frequency.value = fq * (0.997 + Math.random() * 0.006);
+    og.gain.setValueAtTime(0.0001, t0); og.gain.linearRampToValueAtTime((0.0026 - i * 0.0006) * (0.5 + vel), t0 + 0.002);
+    og.gain.setTargetAtTime(0.0001, t0 + 0.003, 0.09); o.connect(og).connect(musicBus); o.start(t0); o.stop(t0 + 0.6);
+  });
 }
 function hatFoot(t0, vel = 0.5) { noiseBurst(t0, 0.045, 0.03 * vel, "bandpass", 3600, 1.4, musicBus); }
 function feather(t0) { osc("sine", 58, t0, 0.12, 0.022, { slide: 45, dest: musicBus }); }
@@ -361,11 +404,12 @@ let catchNote = 0, lastPlayerComp = -1e9;
 function contour(i, steps = 9) { const p = 2 * (steps - 1), k = ((i % p) + p) % p; return (k < steps ? k : p - k) / (steps - 1); }
 function compChord(ch, top, t, vel, dur, rating, combo, tr) {
   if (tr.style === "modal") {
-    const sw = soWhat(top, ch.scale);
-    if (rating >= 2) { const deg = poolNotes(ch.scale, 24, 108), up = deg[deg.indexOf(top) + 1] || top; pianoChord(soWhat(up, ch.scale), t - 0.09, vel * 0.7, 0.12, 0.004); }  // planing slide in
-    if (combo > 0 && combo % 5 === 0) { const deg = poolNotes(ch.scale, 24, 108), i = deg.indexOf(top);
-      [3, 2, 1].forEach((k, j) => pianoChord(soWhat(deg[i + k] || top, ch.scale), t - (3 - j) * 0.085, vel * 0.6, 0.1, 0.003)); }
-    pianoChord(sw, t, vel, dur, 0.005);
+    // sparse, sustained modal comping: a So What voicing under the melody; catches that follow within
+    // a beat answer with just the melody note so the phrase breathes over the slow harmony
+    if (t - lastPlayerComp < 60 / tr.bpm * 1.05) { keyNote(top, t, vel * 0.8, dur * 1.4); return; }
+    if (rating >= 2) { const deg = poolNotes(ch.scale, 24, 108), up = deg[deg.indexOf(top) + 1] || top;
+      pianoChord(soWhat(up, ch.scale), t - (60 / tr.bpm) * (1 - tr.swing), vel * 0.55, 0.2, 0.004); }   // one slide from a step above, on the beat
+    pianoChord(soWhat(top, ch.scale), t, vel, dur * 1.8, 0.008);
     return;
   }
   // tonal: rootless LH + Garland right hand (melody, octave doubling, block-chord fill)
@@ -449,8 +493,9 @@ function switchTrack(d) {
 }
 function musicStop() { musicOn = false; clearInterval(musicTimer); }
 // offline render of a track with simulated catches (used to audition the band without a browser)
-async function renderDemo(id, secs = 16, catchEvery = 1.4) {
-  const keep = { actx, master, musicBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng };
+async function renderDemo(id, secs = 16, catchEvery = 1.4, keys = null) {
+  const keepKeys = Object.assign({}, keysPref); if (keys) keysPref[id] = keys;
+  const keep = { actx, master, musicBus, rhodesBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng };
   const off = new OfflineAudioContext(2, Math.floor(44100 * secs), 44100);
   buildGraph(off); trackIdx = TRACKS.findIndex(tr => tr.id === id); musicOn = true; musicT0 = nextBeat = 0.05; beatIndex = 0; catchNote = 0; lastPlayerComp = -1e9; compRng = rng(99);
   const r = rng(5); let combo = 0;
@@ -459,8 +504,8 @@ async function renderDemo(id, secs = 16, catchEvery = 1.4) {
     const beatStart = nextBeat; scheduleBeat();
     catches.filter(c => c >= beatStart - 1e-9 && c < nextBeat).forEach(c => { combo++; const rating = r() < 0.3 ? 2 : r() < 0.6 ? 1 : 0; sfx.catchChime(rating, combo, nextOffbeat(c + 0.32)); });
   }
-  const buf = await off.startRendering();
-  Object.assign(window, {}); ({ actx, master, musicBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng } = keep);
+  const buf = await off.startRendering(); keysPref = keepKeys;
+  Object.assign(window, {}); ({ actx, master, musicBus, rhodesBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng } = keep);
   // 16-bit WAV, base64
   const L = buf.getChannelData(0), R = buf.getChannelData(1), n = L.length, bytes = new DataView(new ArrayBuffer(44 + n * 4));
   const w = (o, s) => [...s].forEach((c, i) => bytes.setUint8(o + i, c.charCodeAt(0)));
@@ -526,6 +571,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (phase === "title" && (e.code === "ArrowLeft" || e.code === "ArrowRight")) { e.preventDefault(); switchTrack(e.code === "ArrowLeft" ? -1 : 1); return; }
+  if (phase === "title" && (e.code === "ArrowUp" || e.code === "ArrowDown")) { e.preventDefault(); switchKeys(); return; }
   if (KEYMAP[e.code]) { e.preventDefault(); const k = KEYMAP[e.code]; if (k === "up" && !keys.up && phase === "play") sfx.boost(); keys[k] = true; }
   if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); if (phase === "title" || (phase === "end" && endStage === "board")) startGame(); else if (phase === "paused") resume(); }
   if (e.code === "KeyP" || e.code === "Escape") { if (phase === "play") pause(); else if (phase === "paused") resume(); }
@@ -973,8 +1019,8 @@ function drawTitle(t) {
     txt("HIGH SCORES", PF_W / 2, 40, 22, COL.cyan, "center", COL.cyanD);
     txt("OCTOPUS DATA DEPT - ALL PLAYERS", PF_W / 2, 78, 8, COL.grey, "center");
     drawBoard(112, 10, null);
-    drawMusicPicker(t, 486);
-    if (Math.floor(t / 450) % 2 === 0) txt(focused ? "PRESS SPACE TO START" : "CLICK TO START", PF_W / 2, 548, 12, COL.gold, "center", COL.void);
+    drawMusicPicker(t, 452);
+    if (Math.floor(t / 450) % 2 === 0) txt(focused ? "PRESS SPACE TO START" : "CLICK TO START", PF_W / 2, 572, 12, COL.gold, "center", COL.void);
     return;
   }
   const wob = Math.round(Math.sin(t / 400) * 3);
@@ -985,26 +1031,28 @@ function drawTitle(t) {
   const by = 238 + Math.round(Math.sin(t / 200) * 4);
   ctx.drawImage(sprSledBig, PF_W / 2 - sprSledBig.width / 2, by + 112);
   ctx.drawImage(big, PF_W / 2 - big.width / 2, by);
-  txt("RACE UP THE SNOWY PEAKS", PF_W / 2, 404, 9, COL.white, "center");
-  txt("ON THE CRITICAL LINE.", PF_W / 2, 420, 9, COL.white, "center");
-  txt("GRAB THE BAUBLES. CLOSER = MORE", PF_W / 2, 440, 9, COL.cyan, "center");
-  txt("POINTS. DON'T FALL OFF THE EDGE.", PF_W / 2, 456, 9, COL.cyan, "center");
-  drawMusicPicker(t, 486);
-  if (Math.floor(t / 450) % 2 === 0) txt(focused ? "PRESS SPACE TO START" : "CLICK TO START", PF_W / 2, 548, 12, COL.gold, "center", COL.void);
-  txt("(C) 1859 B. RIEMANN", PF_W / 2, 584, 8, COL.grey, "center");
-  txt("PROVEN 2026 L. ALPOGE + CLAUDE", PF_W / 2, 600, 8, COL.grey, "center");
-  txt("OCTOPUS DATA ADVENT", PF_W / 2, 622, 8, COL.pink, "center");
+  txt("RACE UP THE SNOWY PEAKS ON THE", PF_W / 2, 396, 9, COL.white, "center");
+  txt("CRITICAL LINE. GRAB THE BAUBLES.", PF_W / 2, 412, 9, COL.white, "center");
+  txt("CLOSER = MORE POINTS.", PF_W / 2, 428, 9, COL.cyan, "center");
+  drawMusicPicker(t, 452);
+  if (Math.floor(t / 450) % 2 === 0) txt(focused ? "PRESS SPACE TO START" : "CLICK TO START", PF_W / 2, 572, 12, COL.gold, "center", COL.void);
+  txt("(C) 1859 B. RIEMANN  PROVEN 2026 L. ALPOGE + CLAUDE", PF_W / 2, 606, 7, COL.grey, "center");
+  txt("OCTOPUS DATA ADVENT", PF_W / 2, 624, 8, COL.pink, "center");
   if (!HMAP || !terrainReady) txt("LOADING TERRAIN...", PF_W / 2, 642, 8, COL.white, "center");
 }
 function drawMusicPicker(t, y) {
   const w = 280, x = PF_W / 2 - w / 2;
-  box(x, y, w, 40, COL.deep, COL.line);
-  txt("MUSIC", x + 14, y + 16, 8, COL.grey);
-  txt(track().name, x + w / 2 + 24, y + 13, 12, COL.cyan, "center");
-  arrowKeySmall(x + 74, y + 8, "left"); arrowKeySmall(x + w - 34, y + 8, "right");
-  buttons.push({ id: "trkL", x: x + 66, y, w: 40, h: 40, act: () => switchTrack(-1) });
-  buttons.push({ id: "trkR", x: x + w - 42, y, w: 40, h: 40, act: () => switchTrack(1) });
-  txt(musicOn ? "NOW PLAYING  <-/-> TO CHANGE" : "<-/-> TO CHANGE AND PREVIEW", PF_W / 2, y + 48, 7, COL.grey, "center");
+  const row = (yy, label, value, hint, onL, onR, id) => {
+    box(x, yy, w, 36, COL.deep, COL.line);
+    txt(label, x + 14, yy + 14, 8, COL.grey);
+    txt(value, x + w / 2 + 24, yy + 11, 12, COL.cyan, "center");
+    arrowKeySmall(x + 74, yy + 6, "left"); arrowKeySmall(x + w - 34, yy + 6, "right");
+    buttons.push({ id: id + "L", x: x + 66, y: yy, w: 40, h: 36, act: onL });
+    buttons.push({ id: id + "R", x: x + w - 42, y: yy, w: 40, h: 36, act: onR });
+  };
+  row(y, "MUSIC", track().name, "", () => switchTrack(-1), () => switchTrack(1), "trk");
+  row(y + 42, "KEYS", keysName(), "", switchKeys, switchKeys, "keys");
+  txt("<-/-> MUSIC   UP/DOWN KEYS   (PREVIEWS)", PF_W / 2, y + 86, 7, COL.grey, "center");
 }
 function arrowKeySmall(x, y, dir) {
   ctx.fillStyle = COL.pink; const c = x + 12, m = y + 12, d = dir === "left" ? -1 : 1;
