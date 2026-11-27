@@ -161,7 +161,7 @@ function buildGraph(ctx) {
   const comp = ctx.createDynamicsCompressor();
   comp.threshold.value = -16; comp.knee.value = 14; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.25;
   master.connect(comp).connect(ctx.destination);
-  musicBus = ctx.createGain(); musicBus.gain.value = 1; musicBus.connect(master);
+  musicBus = ctx.createGain(); musicBus.gain.value = 1.41; musicBus.connect(master);
   // Rhodes: its own bus with the classic stereo tremolo (auto-pan) and a gentle low-pass for warmth
   rhodesBus = ctx.createGain(); rhodesBus.gain.value = 1;
   const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : ctx.createGain();
@@ -224,7 +224,7 @@ function pianoNote(midi, t0, vel = 0.5, dur = 0.8) {
   const a = actx; if (!a || !pianoWave) return;
   dur = Math.max(0.16, dur);
   const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48));
-  const peak = 0.0085 + 0.034 * vel * vel;
+  const peak = 0.0107 + 0.043 * vel * vel;
   const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.3;
   lp.frequency.setValueAtTime(Math.min(13000, f * (2.5 + 9 * vel) + 500), t0);
   lp.frequency.exponentialRampToValueAtTime(Math.max(f * 1.6, 420), t0 + 0.3 + 0.9 * low);
@@ -245,7 +245,7 @@ function pianoNote(midi, t0, vel = 0.5, dur = 0.8) {
 function rhodesNote(midi, t0, vel = 0.5, dur = 0.8) {
   const a = actx; if (!a || !rhodesBus) return;
   dur = Math.max(0.16, dur);
-  const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48)), peak = 0.0106 + 0.032 * vel;
+  const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48)), peak = 0.0134 + 0.04 * vel;
   const car = a.createOscillator(), mod = a.createOscillator(), idx = a.createGain(), g = a.createGain();
   car.frequency.value = f; mod.frequency.value = f;
   const I = f * (0.4 + 2.6 * vel * vel);                                   // harder = more bark
