@@ -205,7 +205,7 @@ the $1M Clay Millennium Prize problems.
 Riemann's **explicit formula** writes the prime-counting staircase as a smooth trend *plus one wave per zero*.
 The height $t$ of a zero sets the wave's frequency, and its real part $\sigma$ sets how loud the wave grows.
 If every zero sits at $\sigma = \tfrac12$, all the waves are as quiet as possible, which means **the primes are
-spread out as regularly as they possibly could be**. Data people would call it a Fourier decomposition of the
+spread out as regularly as they possibly could be**. Mathematicians would call it a Fourier decomposition of the
 primes, with the hypothesis bounding the noise. Prime-counting estimates, some cryptography arguments and many
 algorithm analyses lean on it. *(Act 2 will let you see this: your baubles' waves light up the prime
 Christmas lights.)*
