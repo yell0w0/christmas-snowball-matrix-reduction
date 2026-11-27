@@ -5,13 +5,18 @@ Run from the repo root with:  streamlit run zero_hunt/app.py
 
 from __future__ import annotations
 
+import html
 import json
+import sys
 from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
 
 HERE = Path(__file__).parent
+sys.path.insert(0, str(HERE))
+import scoreboard  # noqa: E402
+
 META = json.loads((HERE / "map_meta.json").read_text())
 
 st.set_page_config(page_title="Constantine's Zero Hunt", page_icon="❄", layout="centered")
@@ -46,6 +51,13 @@ st.markdown(
   .timeline { border-left: 3px solid var(--pink); padding-left: 14px; margin: .4rem 0 1rem; }
   .timeline div { margin-bottom: .55rem; }
   .timeline b { color: var(--cyan); }
+  table.hs { width: 100%; border-collapse: collapse; border: 3px solid var(--line); background: var(--card);
+             font-family: "Press Start 2P", ui-monospace, monospace; font-size: .62rem; }
+  table.hs th { color: #8A7AAE; text-align: left; padding: 10px 8px; border-bottom: 3px solid var(--line); font-weight: 400; }
+  table.hs td { padding: 9px 8px; color: #FFFFFF; }
+  table.hs tr:nth-child(1) td { color: #FFD166; }
+  table.hs tr:nth-child(2) td, table.hs tr:nth-child(3) td { color: var(--cyan); }
+  table.hs tr.me td { background: rgba(240,80,248,.25); color: #FFD166; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -64,23 +76,58 @@ st.markdown(
 )
 st.write("")
 
-if "best" not in st.session_state:
-    st.session_state.best = None
-if "last_seen" not in st.session_state:
-    st.session_state.last_seen = None
+for k, v in {"last_seen": None, "last_rank": None, "last_result": None}.items():
+    st.session_state.setdefault(k, v)
 
-result = _game(meta=META, key="zero_hunt", default=None)
 
-if result and result.get("at") != st.session_state.last_seen:
-    st.session_state.last_seen = result.get("at")
-    best = st.session_state.best
-    if best is None or result["score"] > best["score"]:
-        st.session_state.best = result
+def _player_name() -> str:
+    """Pre-fill the name box from the data app's login, when it has one."""
+    try:
+        u = st.user
+        if u.get("is_logged_in"):
+            return str(u.get("name") or str(u.get("email") or "").split("@")[0])
+    except Exception:
+        pass
+    return ""
 
-if result:
+
+try:
+    board = scoreboard.top(10)
+    board_error = None
+except Exception as exc:  # storage unavailable: the game still plays, board just stays empty
+    board, board_error = [], str(exc)
+
+result = _game(
+    meta=META,
+    leaderboard=board,
+    last=st.session_state.last_rank,
+    player_name=_player_name(),
+    key="zero_hunt",
+    default=None,
+)
+
+if result and result.get("run_id") and (result["run_id"], result.get("type")) != st.session_state.last_seen:
+    st.session_state.last_seen = (result["run_id"], result.get("type"))
+    st.session_state.last_result = result
+    if result.get("type") == "submit":
+        try:
+            rank = scoreboard.submit(result)
+        except Exception as exc:
+            rank = None
+            st.toast(f"Couldn't save to the scoreboard: {exc}")
+        st.session_state.last_rank = {"run_id": result["run_id"], "rank": rank}
+        st.rerun()  # hand the fresh board and the player's rank straight back to the game
+
+last = st.session_state.last_result
+if last:
+    card = last["scorecard"]
+    lr = st.session_state.last_rank
+    if lr and lr.get("run_id") == last["run_id"] and lr.get("rank") and "global board" not in card:
+        first, _, rest = card.partition("\n")
+        card = f"{first} | #{lr['rank']} on the global board\n{rest}"
     st.markdown("#### SLACK SCORECARD")
     st.caption("Hit the copy icon on the box, or the big button, then paste into the Data Advent channel.")
-    st.code(result["scorecard"], language=None)
+    st.code(card, language=None)
     components.html(
         f"""
 <button id="b">COPY SLACK SCORECARD</button>
@@ -92,7 +139,7 @@ if result:
   #b:hover {{ background: #00F0FF; }}
 </style>
 <script>
-  const t = {json.dumps(result["scorecard"])};
+  const t = {json.dumps(card)};
   const b = document.getElementById("b");
   b.onclick = async () => {{
     let ok = false;
@@ -106,12 +153,24 @@ if result:
         height=50,
     )
 
-if st.session_state.best:
-    b = st.session_state.best
-    c1, c2, c3 = st.columns(3)
-    c1.metric("HI-SCORE", f"{b['score']:,}")
-    c2.metric("BAUBLES", f"{b['caught']}/{b['total']}")
-    c3.metric("MAX COMBO", f"x{b['best_combo']}")
+st.markdown("#### GLOBAL HIGH SCORES")
+if board_error:
+    st.caption(f"Scoreboard storage unavailable ({board_error}).")
+elif not board:
+    st.caption("No scores yet. Be the first name on the board.")
+else:
+    mine = st.session_state.last_rank["run_id"] if st.session_state.last_rank else None
+    rows = "".join(
+        f"<tr class='{'me' if r['run_id'] == mine else ''}'><td>{i + 1}</td><td>{html.escape(r['name'])}</td>"
+        f"<td>{r['score']:,}</td><td>{r['caught']}/30</td><td>{r['perfect']}</td><td>{r['falls']}</td>"
+        f"<td>{int(r['seconds'] // 60)}:{int(r['seconds'] % 60):02d}</td></tr>"
+        for i, r in enumerate(board)
+    )
+    st.markdown(
+        "<table class='hs'><thead><tr><th>#</th><th>NAME</th><th>SCORE</th><th>BAUBLES</th>"
+        f"<th>PERFECT</th><th>FALLS</th><th>TIME</th></tr></thead><tbody>{rows}</tbody></table>",
+        unsafe_allow_html=True,
+    )
 
 with st.expander("WHAT ARE THESE ZEROS? WHAT HAPPENED LAST WEEK?"):
     st.markdown(
@@ -146,7 +205,7 @@ the $1M Clay Millennium Prize problems.
 Riemann's **explicit formula** writes the prime-counting staircase as a smooth trend *plus one wave per zero*.
 The height $t$ of a zero sets the wave's frequency, and its real part $\sigma$ sets how loud the wave grows.
 If every zero sits at $\sigma = \tfrac12$, all the waves are as quiet as possible, which means **the primes are
-spread out as regularly as they possibly could be**. Data people would call it a Fourier decomposition of the
+spread out as regularly as they possibly could be**. Mathematicians would call it a Fourier decomposition of the
 primes, with the hypothesis bounding the noise. Prime-counting estimates, some cryptography arguments and many
 algorithm analyses lean on it. *(Act 2 will let you see this: your baubles' waves light up the prime
 Christmas lights.)*

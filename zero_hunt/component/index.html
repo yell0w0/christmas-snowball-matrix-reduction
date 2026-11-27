@@ -12,25 +12,32 @@
   #wrap { position:relative; width:100%; max-width:760px; margin:0 auto; }
   canvas { display:block; width:100%; height:auto; image-rendering:pixelated; image-rendering:crisp-edges;
     touch-action:none; user-select:none; -webkit-user-select:none; outline:none; border-radius:6px; }
+  #nameInput { position:absolute; display:none; box-sizing:border-box; background:#04000C; color:#FFD166;
+    border:3px solid #F050F8; outline:3px solid #2A0B5C; text-align:center; text-transform:uppercase;
+    font-family:"Press Start 2P", ui-monospace, monospace; caret-color:#00F0FF; padding:0; border-radius:0; }
+  #nameInput:focus { border-color:#00F0FF; }
 </style>
 </head>
 <body>
-<div id="wrap"><canvas id="game" tabindex="0" aria-label="Zero Hunt arcade game. Arrow keys to steer, up to boost, down to brake."></canvas></div>
+<div id="wrap"><canvas id="game" tabindex="0" aria-label="Zero Hunt arcade game. Arrow keys to steer, up to boost, down to brake."></canvas>
+<input id="nameInput" maxlength="16" autocomplete="off" spellcheck="false" aria-label="Your name for the global scoreboard"></div>
 <script>
 (() => {
 "use strict";
 // =================================================================== constants
 const W = 680, H = 660;
-const PF_W = 450;                 // playfield width (terrain is 150 art px x3)
+const PF_W = 450;                 // playfield width on screen
 const SLED_Y = 392;               // the sled sits a bit above centre
-const LINE_X = 225;               // sigma = 1/2
+let LINE_X = 225;                 // world x of sigma = 1/2 (set from the map)
+const CAM_X = 225;                // Constantine is pinned here on screen; the world moves
 const CATCH_R = 33, GREAT_R = 15, PERFECT_R = 6;
 const N_ZEROS = 30;
+const NAME_Y = 318;               // where the name box sits on the end screen
 const PX = 3;                     // art pixel size
 const COL = {
   void:"#04000C", deep:"#07001A", panel:"#0B0222", line:"#2A0B5C", pink:"#F050F8", pinkD:"#9A1AA4",
   cyan:"#00F0FF", cyanD:"#00808A", white:"#FFFFFF", grey:"#8A7AAE", dim:"#4A3A6E", gold:"#FFD166",
-  red:"#FF3B6B", green:"#5CFFA0",
+  red:"#FF3B6B", green:"#5CFFA0", yellow:"#FFE14D",
 };
 const FONT = '"Press Start 2P", ui-monospace, Menlo, monospace';
 
@@ -42,6 +49,9 @@ function resize() {
   scale = cssW / W; dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(W * scale * dpr); canvas.height = Math.round(H * scale * dpr);
   canvas.style.height = (H * scale) + "px";
+  const ni = document.getElementById("nameInput");
+  ni.style.left = (75 / W * 100) + "%"; ni.style.width = (300 / W * 100) + "%";
+  ni.style.top = (NAME_Y / H * 100) + "%"; ni.style.height = (42 * scale) + "px"; ni.style.fontSize = Math.round(14 * scale) + "px";
   sendHeight();
 }
 window.addEventListener("resize", resize);
@@ -49,10 +59,17 @@ window.addEventListener("resize", resize);
 // =================================================================== Streamlit protocol
 function post(type, data) { if (window.parent !== window) window.parent.postMessage(Object.assign({ isStreamlitMessage:true, type }, data), "*"); }
 function sendHeight() { post("streamlit:setFrameHeight", { height: Math.ceil(H * scale) + 4 }); }
-let meta = null;
+let meta = null, board = [], nameDefault = "", runId = "", myRank = null, endStage = "", savingSince = 0;
 window.addEventListener("message", (e) => {
   const d = e.data; if (!d || d.type !== "streamlit:render") return;
-  if (!meta && d.args && d.args.meta) { meta = d.args.meta; initWorld(); }
+  const a = d.args || {};
+  if (!meta && a.meta) { meta = a.meta; initWorld(); }
+  if (Array.isArray(a.leaderboard)) board = a.leaderboard;
+  if (a.player_name && !nameDefault) nameDefault = String(a.player_name);
+  if (a.last && a.last.run_id && a.last.run_id === runId) {
+    myRank = a.last.rank || null;
+    if (endStage === "saving") { endStage = "board"; buildScorecard(); }
+  }
   sendHeight();
 });
 
@@ -131,14 +148,50 @@ const crt = document.createElement("canvas"); crt.width = W; crt.height = H;
   const v = g.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.82);
   v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,0.55)"); g.fillStyle = v; g.fillRect(0, 0, W, H); })();
 
-// =================================================================== audio: e-piano chimes + swing chip bass
-let actx = null, master = null, muted = false;
+// =================================================================== audio engine
+// A small jazz trio in Web Audio: piano (hammer-shaped harmonics, two detuned strings,
+// velocity-sensitive brightness), upright bass, ride + hi-hat, a little room reverb.
+// Harmony follows Jazzology (Rawlins & Bahha): rootless type A/B voicings with
+// A<->B switches on root motion by 4ths/5ths, Garland-style right-hand block chords,
+// the book's jazz-blues in F, swing comping rhythms. SWING plays on Rhodes, BLUES on piano.
+let actx = null, master = null, musicBus = null, rhodesBus = null, verbIn = null, pianoWave = null, muted = false;
+function buildGraph(ctx) {
+  actx = ctx;
+  master = ctx.createGain(); master.gain.value = muted ? 0 : 1;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -16; comp.knee.value = 14; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.25;
+  master.connect(comp).connect(ctx.destination);
+  musicBus = ctx.createGain(); musicBus.gain.value = 1.41; musicBus.connect(master);
+  // Rhodes: its own bus with the classic stereo tremolo (auto-pan) and a gentle low-pass for warmth
+  rhodesBus = ctx.createGain(); rhodesBus.gain.value = 1;
+  const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : ctx.createGain();
+  const warm = ctx.createBiquadFilter(); warm.type = "lowpass"; warm.frequency.value = 4800; warm.Q.value = 0.4;
+  rhodesBus.connect(warm).connect(pan); pan.connect(musicBus);
+  if (pan.pan) { const lfo = ctx.createOscillator(), depth = ctx.createGain(); lfo.frequency.value = 4.2; depth.gain.value = 0.32; lfo.connect(depth).connect(pan.pan); lfo.start(); }
+  const conv = ctx.createConvolver(); conv.buffer = roomImpulse(ctx, 1.7);
+  const verbLP = ctx.createBiquadFilter(); verbLP.type = "lowpass"; verbLP.frequency.value = 4200;
+  verbIn = ctx.createGain(); verbIn.gain.value = 0.2;
+  verbIn.connect(conv).connect(verbLP).connect(master);
+  // piano string spectrum: ~1/k^1.5 roll-off with a hammer-position comb (struck near 1/7 of the string)
+  const n = 28, re = new Float32Array(n), im = new Float32Array(n);
+  for (let k = 1; k < n; k++) im[k] = Math.pow(k, -1.5) * (0.3 + 0.7 * Math.abs(Math.sin(Math.PI * k / 7.4)));
+  pianoWave = ctx.createPeriodicWave(re, im);
+}
+function roomImpulse(ctx, sec) {
+  const sr = ctx.sampleRate, len = Math.floor(sr * sec), b = ctx.createBuffer(2, len, sr);
+  for (let c = 0; c < 2; c++) { const d = b.getChannelData(c);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 4) * Math.min(1, i / (0.01 * sr)); }
+  return b;
+}
 function audio() {
-  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); master = actx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(actx.destination); } catch (_) { return null; } }
-  if (actx.state === "suspended") actx.resume();
+  if (!actx) { try { buildGraph(new (window.AudioContext || window.webkitAudioContext)()); } catch (_) { actx = null; return null; } }
+  if (actx.state === "suspended" && !(actx instanceof OfflineAudioContext)) actx.resume();
   return actx;
 }
 function setMuted(m) { muted = m; if (master) master.gain.setTargetAtTime(m ? 0 : 1, actx.currentTime, 0.02); }
+const hz = (midi) => 440 * Math.pow(2, (midi - 69) / 12);
+
+// ---- game SFX (deliberately chippy; the band is acoustic)
 function osc(type, f, t0, dur, vol, opts = {}) {
   const a = actx; if (!a) return;
   const o = a.createOscillator(), g = a.createGain(); o.type = type; o.frequency.setValueAtTime(f, t0);
@@ -148,93 +201,318 @@ function osc(type, f, t0, dur, vol, opts = {}) {
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   let node = o;
   if (opts.lp) { const f2 = a.createBiquadFilter(); f2.type = "lowpass"; f2.frequency.value = opts.lp; o.connect(f2); node = f2; }
-  node.connect(g).connect(master); o.start(t0); o.stop(t0 + dur + 0.05);
+  node.connect(g).connect(opts.dest || master); o.start(t0); o.stop(t0 + dur + 0.05);
 }
-function noiseHit(t0, dur, vol, hp = 7000) {
-  const a = actx; if (!a) return;
-  const len = Math.max(1, Math.floor(a.sampleRate * dur)), buf = a.createBuffer(1, len, a.sampleRate), ch = buf.getChannelData(0);
+const noiseCache = {};
+function noiseBuf(dur) {
+  const key = actx.sampleRate + ":" + dur.toFixed(3);
+  if (noiseCache[key] && noiseCache[key].ctx === actx) return noiseCache[key].buf;
+  const len = Math.max(1, Math.floor(actx.sampleRate * dur)), buf = actx.createBuffer(1, len, actx.sampleRate), ch = buf.getChannelData(0);
   for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
-  const s = a.createBufferSource(); s.buffer = buf; const f = a.createBiquadFilter(); f.type = "highpass"; f.frequency.value = hp;
-  const g = a.createGain(); g.gain.value = vol; s.connect(f).connect(g).connect(master); s.start(t0);
+  noiseCache[key] = { ctx: actx, buf }; return buf;
 }
-const hz = (midi) => 440 * Math.pow(2, (midi - 69) / 12);
-function epiano(midi, t0, vol = 0.09, dur = 0.9) {
-  const f = hz(midi);
-  osc("sine", f, t0, dur, vol); osc("triangle", f, t0, dur * 0.7, vol * 0.35, { detune: 6 });
-  osc("sine", f * 2, t0, dur * 0.35, vol * 0.25); osc("sine", f * 4.01, t0, 0.12, vol * 0.18);
+function noiseBurst(t0, dur, vol, type = "highpass", freq = 7000, q = 0.7, dest = master) {
+  const a = actx; if (!a) return;
+  const s = a.createBufferSource(); s.buffer = noiseBuf(dur);
+  const f = a.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+  const g = a.createGain(); g.gain.value = vol; s.connect(f).connect(g).connect(dest); s.start(t0);
 }
-// D dorian with colour tones; catches walk up then back down (ping-pong)
-const MELODY = [62, 65, 67, 69, 72, 74, 76, 77, 79, 81, 84, 86];
-function pingPong(i) { const n = MELODY.length, p = 2 * (n - 1), k = ((i % p) + p) % p; return MELODY[k < n ? k : p - k]; }
-// ii - V - I - VI7 in C, voiced as rootless-ish jazz chords
-const CHORDS = [
-  { name:"Dm9",  bass:[38, 41, 45, 44], voicing:[53, 57, 60, 64] },
-  { name:"G13",  bass:[43, 47, 50, 49], voicing:[53, 59, 64, 69] },
-  { name:"Cmaj9",bass:[36, 40, 43, 46], voicing:[52, 55, 59, 62] },
-  { name:"A7b9", bass:[45, 49, 52, 51], voicing:[55, 58, 61, 67] },
+function noiseHit(t0, dur, vol, hp = 7000) { noiseBurst(t0, dur, vol, "highpass", hp); }
+
+// ---- the trio
+function pianoNote(midi, t0, vel = 0.5, dur = 0.8) {
+  const a = actx; if (!a || !pianoWave) return;
+  dur = Math.max(0.16, dur);
+  const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48));
+  const peak = 0.0107 + 0.043 * vel * vel;
+  const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.3;
+  lp.frequency.setValueAtTime(Math.min(13000, f * (2.5 + 9 * vel) + 500), t0);
+  lp.frequency.exponentialRampToValueAtTime(Math.max(f * 1.6, 420), t0 + 0.3 + 0.9 * low);
+  const g = a.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(peak, t0 + 0.005);
+  g.gain.setTargetAtTime(peak * 0.38, t0 + 0.006, 0.07 + 0.08 * low);      // prompt sound
+  g.gain.setTargetAtTime(0.0001, t0 + 0.14, 0.5 + 1.6 * low);              // aftersound
+  g.gain.setTargetAtTime(0.0001, t0 + dur, 0.08);                          // damper
+  for (const det of [-1.8, 2.1]) {
+    const o = a.createOscillator(); o.setPeriodicWave(pianoWave); o.frequency.value = f; o.detune.value = det + (Math.random() - 0.5) * 0.8;
+    o.connect(lp); o.start(t0); o.stop(t0 + dur + 0.7);
+  }
+  lp.connect(g); g.connect(musicBus); g.connect(verbIn);
+  noiseBurst(t0, 0.02, 0.006 * vel, "lowpass", 1800, 0.5, musicBus);      // felt on string
+}
+// Rhodes: 2-operator FM (1:1 ratio, index falls quickly = the "bark"), plus the short tine partial
+function rhodesNote(midi, t0, vel = 0.5, dur = 0.8) {
+  const a = actx; if (!a || !rhodesBus) return;
+  dur = Math.max(0.16, dur);
+  const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48)), peak = 0.0134 + 0.04 * vel;
+  const car = a.createOscillator(), mod = a.createOscillator(), idx = a.createGain(), g = a.createGain();
+  car.frequency.value = f; mod.frequency.value = f;
+  const I = f * (0.4 + 2.6 * vel * vel);                                   // harder = more bark
+  idx.gain.setValueAtTime(I, t0); idx.gain.setTargetAtTime(f * 0.25, t0 + 0.005, 0.12 + 0.1 * low);
+  mod.connect(idx).connect(car.frequency);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.003);
+  g.gain.setTargetAtTime(peak * 0.55, t0 + 0.004, 0.25);
+  g.gain.setTargetAtTime(0.0001, t0 + 0.3, 0.9 + 1.4 * low);
+  g.gain.setTargetAtTime(0.0001, t0 + dur, 0.1);
+  car.connect(g); g.connect(rhodesBus); const v = a.createGain(); v.gain.value = 0.5; g.connect(v).connect(verbIn);
+  const tine = a.createOscillator(), tg = a.createGain(); tine.frequency.value = f * 7.02;
+  tg.gain.setValueAtTime(0.0001, t0); tg.gain.linearRampToValueAtTime(peak * 0.12 * vel, t0 + 0.002); tg.gain.setTargetAtTime(0.0001, t0 + 0.003, 0.025);
+  tine.connect(tg).connect(rhodesBus);
+  [car, mod, tine].forEach(o => { o.start(t0); o.stop(t0 + dur + 0.8); });
+}
+function keyNote(midi, t0, vel, dur) { (track().keys === "rhodes" ? rhodesNote : pianoNote)(midi, t0, vel, dur); }
+function pianoChord(notes, t0, vel, dur, roll = 0.006) {
+  notes.slice().sort((a, b) => a - b).forEach((m, i) => keyNote(m, t0 + i * roll + Math.random() * 0.003, Math.max(0.05, vel + (Math.random() - 0.5) * 0.08), dur));
+}
+function epiano(midi, t0, vol = 0.06, dur = 0.6) { pianoNote(midi, t0, Math.min(0.9, vol * 7), dur); }   // UI blips
+function upright(midi, t0, dur, vel = 0.75) {
+  const a = actx; if (!a) return;
+  const f = hz(midi), peak = 0.19 * vel;
+  const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.9;
+  lp.frequency.setValueAtTime(1300 + 900 * vel, t0); lp.frequency.exponentialRampToValueAtTime(460, t0 + 0.25);
+  const g = a.createGain();
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.014);
+  g.gain.setTargetAtTime(peak * 0.5, t0 + 0.016, 0.08);
+  g.gain.setTargetAtTime(0.0001, t0 + 0.12, 0.5);
+  g.gain.setTargetAtTime(0.0001, t0 + dur, 0.045);
+  const o1 = a.createOscillator(); o1.type = "triangle";
+  o1.frequency.setValueAtTime(f * 1.012, t0); o1.frequency.exponentialRampToValueAtTime(f, t0 + 0.05);
+  const o2 = a.createOscillator(); o2.type = "sine"; o2.frequency.value = f;
+  const body = a.createGain(); body.gain.value = 0.9;
+  const o3 = a.createOscillator(); o3.type = "sine"; o3.frequency.value = f * 2; const h2 = a.createGain(); h2.gain.value = 0.5;   // 2nd harmonic: the bit laptops can play
+  o1.connect(lp); o2.connect(body).connect(lp); o3.connect(h2).connect(lp); lp.connect(g); g.connect(musicBus);
+  const v = a.createGain(); v.gain.value = 0.25; g.connect(v).connect(verbIn);
+  [o1, o2, o3].forEach(o => { o.start(t0); o.stop(t0 + dur + 0.3); });
+  noiseBurst(t0, 0.025, 0.02 * vel, "bandpass", f * 5, 1.2, musicBus);    // finger pluck
+}
+// ride: a darker noise wash (band-limited, slow decay) with a soft inharmonic bell on the stick
+function ride(t0, vel = 0.5) {
+  const a = actx; if (!a) return;
+  const src = a.createBufferSource(); src.buffer = noiseBuf(1.1);
+  const hp = a.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 2600;
+  const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 7800; lp.Q.value = 0.3;
+  const g = a.createGain(), peak = 0.011 + 0.018 * vel;
+  g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.002);
+  g.gain.setTargetAtTime(peak * 0.35, t0 + 0.004, 0.03); g.gain.setTargetAtTime(0.0001, t0 + 0.04, 0.35);
+  src.connect(hp).connect(lp).connect(g); g.connect(musicBus); const v = a.createGain(); v.gain.value = 0.3; g.connect(v).connect(verbIn);
+  src.start(t0);
+  [2410, 3530, 4870].forEach((fq, i) => {                                  // the "ping"
+    const o = a.createOscillator(), og = a.createGain(); o.frequency.value = fq * (0.997 + Math.random() * 0.006);
+    og.gain.setValueAtTime(0.0001, t0); og.gain.linearRampToValueAtTime((0.0026 - i * 0.0006) * (0.5 + vel), t0 + 0.002);
+    og.gain.setTargetAtTime(0.0001, t0 + 0.003, 0.09); o.connect(og).connect(musicBus); o.start(t0); o.stop(t0 + 0.6);
+  });
+}
+function hatFoot(t0, vel = 0.5) { noiseBurst(t0, 0.045, 0.03 * vel, "bandpass", 3600, 1.4, musicBus); }
+function feather(t0) { osc("sine", 58, t0, 0.12, 0.022, { slide: 45, dest: musicBus }); }
+
+// ---- harmony helpers
+const pcOf = (m) => ((m % 12) + 12) % 12;
+function rng(seed) { return () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function poolNotes(pcs, lo, hi) { const out = []; for (let m = lo; m <= hi; m++) if (pcs.includes(pcOf(m))) out.push(m); return out; }
+const BASS_LO = 31, BASS_HI = 50;       // G1 .. D3
+function placePc(pc, near) { let best = null; for (let m = BASS_LO; m <= BASS_HI; m++) if (pcOf(m) === pc && (best === null || Math.abs(m - near) < Math.abs(best - near))) best = m; return best; }
+function scaleStep(m, scale, dir) { for (let k = 1; k <= 3; k++) { const c = m + dir * k; if (scale.includes(pcOf(c))) return c; } return m + dir * 2; }
+// walking bass: roots on chord changes, scale steps between, chromatic / dominant approach into the next root
+function buildWalk(tr) {
+  const r = rng(tr.seed), tl = tr.timeline, out = [];
+  let prev = placePc(tl[0].root, 40), dir = 1;
+  for (let i = 0; i < tl.length; i++) {
+    const ch = tl[i], nx = tl[(i + 1) % tl.length];
+    const starts = i === 0 || tl[i - 1] !== ch, ends = nx !== ch || (i + 1) % 16 === 0;
+    let m;
+    if (starts) m = placePc(ch.root, prev);
+    else if (ends) {
+      const target = placePc(nx.root, prev), x = r();
+      m = x < 0.6 ? target + (prev < target ? -1 : 1) : x < 0.85 ? placePc(pcOf(nx.root + 7), prev) : target + (prev < target ? 1 : -1);
+    } else if (i % 4 === 0 && r() < 0.5) m = placePc(r() < 0.65 ? ch.root : pcOf(ch.root + 7), prev);
+    else {
+      if (prev >= BASS_HI - 2) dir = -1; else if (prev <= BASS_LO + 3) dir = 1; else if (r() < 0.22) dir = -dir;
+      m = r() < 0.78 ? scaleStep(prev, ch.scale, dir) : (placePc(ch.pcs[Math.floor(r() * Math.min(3, ch.pcs.length))], prev + dir * 4) || prev + dir * 2);
+    }
+    while (m < BASS_LO) m += 12; while (m > BASS_HI) m -= 12;
+    if (m === prev) m = scaleStep(prev, ch.scale, prev > 42 ? -1 : 1);
+    out.push(m); prev = m;
+  }
+  return out;
+}
+// chord = rootless left-hand voicing (Jazzology type A/B), right-hand note pool (chord tones + tensions,
+// avoid-notes left out), and the scale the bass walks in
+const ch_ = (name, root, lh, pcs, scale) => ({ name, root, lh, pcs, scale });
+const IONIAN = [0, 2, 4, 5, 7, 9, 11];
+const mode = (root, steps) => steps.map(s => pcOf(root + s));
+const DORIAN = [0, 2, 3, 5, 7, 9, 10], MIXO = [0, 2, 4, 5, 7, 9, 10], PHRYG = [0, 1, 3, 5, 7, 8, 10], ALT = [0, 1, 3, 4, 6, 8, 10];
+// SWING: I-VI-ii-V twice in C (iii for I second time). Type A/B alternate on 4th/5th root motion.
+const SW = {
+  C:  ch_("Cmaj9", 0, [52, 55, 59, 62], [0, 2, 4, 7, 9, 11], mode(0, IONIAN)),
+  A:  ch_("A7alt", 9, [55, 60, 61, 65], [9, 1, 7, 10, 0, 5], mode(9, ALT)),
+  Dm: ch_("Dm9", 2, [53, 57, 60, 64], [2, 5, 9, 0, 4], mode(2, DORIAN)),
+  G:  ch_("G13", 7, [53, 57, 59, 64], [7, 11, 2, 5, 9, 4], mode(7, MIXO)),
+  Em: ch_("Em7", 4, [55, 57, 59, 62], [4, 7, 11, 2, 9], mode(4, PHRYG)),
+};
+// BLUES in F, as voiced in Jazzology ch.6 (ii-Vs in bars 4 & 9, B dim passing chord, turnaround)
+const BL = {
+  F:   ch_("F13", 5, [51, 55, 57, 62], [5, 9, 0, 3, 7, 2], mode(5, MIXO)),
+  Bb:  ch_("Bb13", 10, [50, 55, 56, 60], [10, 2, 5, 8, 0, 7], mode(10, MIXO)),
+  Cm:  ch_("Cm9", 0, [51, 55, 58, 62], [0, 3, 7, 10, 2], mode(0, DORIAN)),
+  Bo:  ch_("B°7", 11, [50, 53, 56, 59], [11, 2, 5, 8], [11, 1, 2, 4, 5, 7, 8, 10]),
+  Da:  ch_("D7alt", 2, [54, 58, 60, 65], [2, 6, 0, 3, 5, 10], mode(2, ALT)),
+  Gm:  ch_("Gm9", 7, [53, 57, 58, 62], [7, 10, 2, 5, 9], mode(7, DORIAN)),
+  C:   ch_("C13", 0, [52, 57, 58, 62], [0, 4, 7, 10, 2, 9], mode(0, MIXO)),
+  Am:  ch_("Am9", 9, [55, 59, 60, 64], [9, 0, 4, 7, 11], mode(9, DORIAN)),
+  Ca:  ch_("C7alt", 0, [52, 56, 58, 63], [0, 4, 10, 1, 3, 8], mode(0, ALT)),
+};
+const TRACKS = [
+  { id: "swing", name: "SWING", bpm: 138, swing: 0.66, keys: "rhodes", seed: 11,
+    form: [[SW.C, 4], [SW.A, 4], [SW.Dm, 4], [SW.G, 4], [SW.Em, 4], [SW.A, 4], [SW.Dm, 4], [SW.G, 4]],
+    finale: [[SW.Dm, 79], [SW.G, 77], [SW.C, 76], [SW.C, 86]] },
+  { id: "blues", name: "BLUES", bpm: 120, swing: 0.67, keys: "piano", seed: 23,
+    form: [[BL.F, 4], [BL.Bb, 4], [BL.F, 4], [BL.Cm, 2], [BL.F, 2], [BL.Bb, 4], [BL.Bo, 4], [BL.F, 4], [BL.Da, 4],
+           [BL.Gm, 4], [BL.C, 4], [BL.Am, 2], [BL.Da, 2], [BL.Gm, 2], [BL.Ca, 2]],
+    finale: [[BL.Gm, 77], [BL.Ca, 75], [BL.F, 74], [BL.F, 81]] },
 ];
-let catchNote = 0;
+TRACKS.forEach(tr => { tr.timeline = []; tr.form.forEach(([c, n]) => { for (let i = 0; i < n; i++) tr.timeline.push(c); }); tr.walk = buildWalk(tr); });
+let trackIdx = 0;
+try { trackIdx = Math.max(0, TRACKS.findIndex(tr => tr.id === localStorage.getItem("zerohunt_track"))); } catch (_) {}
+const track = () => TRACKS[trackIdx];
+
+// ---- the player comps: each caught bauble is a piano chord on the off-beat
+let catchNote = 0, lastPlayerComp = -1e9;
+function contour(i, steps = 9) { const p = 2 * (steps - 1), k = ((i % p) + p) % p; return (k < steps ? k : p - k) / (steps - 1); }
+function compChord(ch, top, t, vel, dur, rating, combo, tr) {
+  // tonal: rootless LH + Garland right hand (melody, octave doubling, block-chord fill)
+  const rh = [top];
+  if (rating >= 1) rh.push(top - 12);
+  if (rating >= 2) poolNotes(ch.pcs, top - 10, top - 3).filter(m => !ch.lh.includes(m)).slice(-2).forEach(m => rh.push(m));
+  if (combo > 0 && combo % 5 === 0) pianoNote(top - 1, t - 0.035, vel * 0.55, 0.06);       // crushed grace note
+  pianoChord(ch.lh, t, vel * 0.8, dur, 0.007);
+  pianoChord(rh, t + 0.004, vel, dur, 0.004);
+}
 const sfx = {
-  catchChime(rating, combo) {
-    if (!audio()) return; const t = actx.currentTime;
-    const note = pingPong(catchNote++);
-    epiano(note, t, 0.1);
-    if (rating >= 2) epiano(note + 7, t + 0.07, 0.05, 0.6);            // perfect: add a fifth sparkle
-    const ch = CHORDS[Math.floor(beatIndex / 4) % CHORDS.length];
-    ch.voicing.forEach((m, i) => epiano(m, t + 0.01 + i * 0.012, 0.022, 0.7));
-    if (combo > 0 && combo % 5 === 0) [0, 3, 7, 10, 14].forEach((d, i) => epiano(note + d, t + 0.12 + i * 0.05, 0.035, 0.5));
+  catchChime(rating, combo, at) {
+    if (!audio()) return;
+    const tr = track(), t = Math.max(actx.currentTime, at || actx.currentTime);
+    const ch = chordAt(t + 0.5 * spb());                     // an "and" anticipates the next beat's chord
+    const pool = poolNotes(ch.pcs, 72, 86);
+    const top = pool[Math.round(contour(catchNote++) * (pool.length - 1))];
+    compChord(ch, top, t, 0.42 + 0.08 * rating, 0.38 + 0.18 * rating, rating, combo, tr);
+    lastPlayerComp = t;
   },
-  miss() { if (!audio()) return; const t = actx.currentTime; osc("square", hz(64), t, 0.12, 0.035, { lp: 1800 }); osc("square", hz(61), t + 0.1, 0.22, 0.035, { lp: 1400, slide: hz(55) }); catchNote = 0; },
+  catchTick() { if (!audio()) return; noiseBurst(actx.currentTime, 0.03, 0.03, "bandpass", 9000, 1.2); },
+  skid() { if (!audio()) return; noiseHit(actx.currentTime, 0.12, 0.025, 2500); },
+  miss() { if (!audio()) return; const t = actx.currentTime; osc("square", hz(64), t, 0.12, 0.03, { lp: 1800 }); osc("square", hz(61), t + 0.1, 0.22, 0.03, { lp: 1400, slide: hz(55) }); catchNote = 0; },
   beep(hi) { if (!audio()) return; osc("square", hi ? 880 : 440, actx.currentTime, hi ? 0.35 : 0.12, 0.05, { lp: 3000 }); },
   boost() { if (!audio()) return; noiseHit(actx.currentTime, 0.25, 0.04, 1500); },
+  fall() { if (!audio()) return; const t = actx.currentTime; osc("sine", 1100, t, 0.8, 0.07, { slide: 90 }); osc("square", 550, t, 0.8, 0.015, { slide: 45, lp: 1200 }); },
+  respawn() { if (!audio()) return; const t = actx.currentTime; [62, 66, 69, 74].forEach((m, i) => osc("square", hz(m), t + i * 0.06, 0.12, 0.03, { lp: 2500 })); },
   bump() { if (!audio()) return; osc("triangle", 110, actx.currentTime, 0.08, 0.05, { slide: 70 }); },
+  // a short cadence in the tune's own language, ending on a long, rung-out chord
   fanfare() {
-    if (!audio()) return; const t = actx.currentTime;
-    [[50, 53, 57, 60, 64], [43, 53, 59, 64, 69], [48, 52, 55, 59, 62, 67]].forEach((ch, k) =>
-      ch.forEach((m, i) => epiano(m + 12, t + k * 0.45 + i * 0.03, 0.04, k === 2 ? 2.2 : 0.8)));
-    [74, 76, 79, 83, 86].forEach((m, i) => epiano(m, t + 0.9 + i * 0.09, 0.06, 1.2));
+    if (!audio()) return;
+    const tr = track(), t = actx.currentTime + 0.05, beat = 60 / tr.bpm;
+    tr.finale.forEach(([c, top], k) => {
+      const last = k === tr.finale.length - 1, at = t + k * beat * 1.5;
+      if (last) upright(placePc(c.root, 38), at, 2.6, 0.7);
+      compChord(c, top, at, last ? 0.5 : 0.4, last ? 2.6 : beat * 1.2, last ? 2 : 1, 0, tr);
+    });
   },
 };
-// swing scheduler
-const BPM = 132; let musicOn = false, nextBeat = 0, beatIndex = 0, musicTimer = null;
-function scheduleMusic() {
-  if (!actx || !musicOn) return;
-  const spb = 60 / BPM;
-  while (nextBeat < actx.currentTime + 0.12) {
-    const ch = CHORDS[Math.floor(beatIndex / 4) % CHORDS.length], b = beatIndex % 4;
-    osc("triangle", hz(ch.bass[b]), nextBeat, spb * 0.9, 0.11, { attack: 0.005 });
-    noiseHit(nextBeat + spb * 0.667, 0.04, 0.018);                     // swung "and"
-    if (b === 1 || b === 3) noiseHit(nextBeat, 0.09, 0.03, 5000);       // 2 and 4
-    if (b === 1) ch.voicing.forEach(m => osc("square", hz(m), nextBeat + spb * 0.667, 0.09, 0.008, { lp: 1600 }));
-    nextBeat += spb; beatIndex++;
+// ---- scheduler: one clock (musicT0) so catches can be quantised to the band's off-beats
+let musicOn = false, nextBeat = 0, beatIndex = 0, musicTimer = null, musicT0 = 0, compRng = rng(99);
+const spb = () => 60 / track().bpm;
+// swing comping rhythms (Jazzology ch.9), in beats; x.0 = on the beat, x+sw = swung "and"
+const COMP = (sw) => [[1 + sw], [3 + sw], [1 + sw, 3], [sw, 2], [2 + sw], [0, 1 + sw], [], [1, 2 + sw], [3 + sw], []];
+function scheduleBeat() {
+  const tr = track(), sp = spb(), n = beatIndex % tr.timeline.length, b = beatIndex % 4, ch = tr.timeline[n], t = nextBeat;
+  upright(tr.walk[n], t, sp * 0.94, 0.72 + (b % 2 ? -0.06 : 0.06) + (compRng() - 0.5) * 0.08);
+  ride(t, b % 2 ? 0.7 : 0.5);
+  if (b % 2) { ride(t + tr.swing * sp, 0.32); hatFoot(t, 0.7); }
+  feather(t);
+  if (b === 0 && t - lastPlayerComp > 2.5 * sp) {          // the pianist lays out while you're comping
+    const pat = COMP(tr.swing)[Math.floor(compRng() * 10)];
+    pat.forEach(off => {
+      const at = t + off * sp, chordThen = tr.timeline[(n + Math.ceil(off - 1e-6)) % tr.timeline.length];   // anticipations take the next chord
+      pianoChord(chordThen.lh, at, 0.24 + compRng() * 0.06, 0.2 + compRng() * 0.15, 0.006);
+    });
   }
+  nextBeat += sp; beatIndex++;
 }
-function musicStart() { if (!audio()) return; musicOn = true; nextBeat = actx.currentTime + 0.05; beatIndex = 0; clearInterval(musicTimer); musicTimer = setInterval(scheduleMusic, 25); }
+function scheduleMusic() { if (!actx || !musicOn) return; while (nextBeat < actx.currentTime + 0.15) scheduleBeat(); }
+function chordAt(t) {
+  const tr = track(); if (!musicOn) return tr.timeline[0];
+  const k = Math.max(0, Math.floor((t - musicT0) / spb()));
+  return tr.timeline[k % tr.timeline.length];
+}
+// next swung "and" at or after time `after` (audio clock); null when the band is off
+function nextOffbeat(after) {
+  if (!musicOn || !actx) return null;
+  const sp = spb(), sw = track().swing * sp;
+  const k = Math.ceil((after - musicT0 - sw) / sp);
+  return musicT0 + k * sp + sw;
+}
+function musicStart() { if (!audio()) return; musicOn = true; musicT0 = nextBeat = actx.currentTime + 0.05; beatIndex = 0; lastPlayerComp = -1e9; clearInterval(musicTimer); musicTimer = setInterval(scheduleMusic, 25); }
+function switchTrack(d) {
+  trackIdx = (trackIdx + d + TRACKS.length) % TRACKS.length;
+  try { localStorage.setItem("zerohunt_track", track().id); } catch (_) {}
+  if (audio()) { musicStop(); musicStart(); }          // preview on the title screen
+}
 function musicStop() { musicOn = false; clearInterval(musicTimer); }
+// offline render of a track with simulated catches (used to audition the band without a browser)
+async function renderDemo(id, secs = 16, catchEvery = 1.4) {
+  const keep = { actx, master, musicBus, rhodesBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng };
+  const off = new OfflineAudioContext(2, Math.floor(44100 * secs), 44100);
+  buildGraph(off); trackIdx = TRACKS.findIndex(tr => tr.id === id); musicOn = true; musicT0 = nextBeat = 0.05; beatIndex = 0; catchNote = 0; lastPlayerComp = -1e9; compRng = rng(99);
+  const r = rng(5); let combo = 0;
+  const catches = []; for (let c = 1.2; c < secs - 2; c += catchEvery * (0.7 + r() * 0.6)) catches.push(c);
+  while (nextBeat < secs) {
+    const beatStart = nextBeat; scheduleBeat();
+    catches.filter(c => c >= beatStart - 1e-9 && c < nextBeat).forEach(c => { combo++; const rating = r() < 0.3 ? 2 : r() < 0.6 ? 1 : 0; sfx.catchChime(rating, combo, nextOffbeat(c + 0.32)); });
+  }
+  const buf = await off.startRendering();
+  Object.assign(window, {}); ({ actx, master, musicBus, rhodesBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng } = keep);
+  // 16-bit WAV, base64
+  const L = buf.getChannelData(0), R = buf.getChannelData(1), n = L.length, bytes = new DataView(new ArrayBuffer(44 + n * 4));
+  const w = (o, s) => [...s].forEach((c, i) => bytes.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF"); bytes.setUint32(4, 36 + n * 4, true); w(8, "WAVEfmt "); bytes.setUint32(16, 16, true); bytes.setUint16(20, 1, true); bytes.setUint16(22, 2, true);
+  bytes.setUint32(24, 44100, true); bytes.setUint32(28, 44100 * 4, true); bytes.setUint16(32, 4, true); bytes.setUint16(34, 16, true); w(36, "data"); bytes.setUint32(40, n * 4, true);
+  let peak = 0;
+  for (let i = 0; i < n; i++) { peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
+    bytes.setInt16(44 + i * 4, Math.max(-1, Math.min(1, L[i])) * 32767, true); bytes.setInt16(46 + i * 4, Math.max(-1, Math.min(1, R[i])) * 32767, true); }
+  let bin = ""; const u8 = new Uint8Array(bytes.buffer); for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return { wav: btoa(bin), peak, catches: catches.length };
+}
 
 // =================================================================== world
 let zeros = [], phase = "title";        // title | countdown | play | paused | end
 let tNow = 2.5, vt = 0, sx = LINE_X, vx = 0, ang = 0, angV = 0;
+let falls = 0, fallT = 0, fallFrom = 0, fallDir = 0, respawnBlink = 0;
+const FALL_S = 0.85, RESPAWN_S = 0.75;
 let score = 0, combo = 0, bestCombo = 0, caught = 0, missed = 0, elapsed = 0, countdown = 0, timeBonus = 0;
 let hiScore = 0, newHi = false, sadUntil = 0, flash = 0, flashCol = COL.white, shake = 0;
 let particles = [], popups = [], flyers = [], trail = [], flakes = [];
 const keys = { left:false, right:false, up:false, down:false };
 let pointerSteer = 0, focused = true, lastScorecard = "", copyMsgUntil = 0;
+let usedBoost = false, usedSteer = false, skidCooldown = 0;
 try { hiScore = +(localStorage.getItem("zerohunt_hi") || 0); } catch (_) {}
 
-function initWorld() { resetRun(); }
+function initWorld() { LINE_X = xOfSigma(0.5); resetRun(); }
 function resetRun() {
   zeros = meta.zeros.slice(0, N_ZEROS).map((t, i) => ({ t, state:"up", slot:i, rating:0 }));
-  tNow = 2.5; vt = 0.6; sx = LINE_X; vx = 0; ang = 0; angV = 0;
+  tNow = 6.5; vt = 0.8; sx = LINE_X; vx = 0; ang = 0; angV = 0;
+  usedBoost = false; usedSteer = false; endStage = ""; myRank = null; hideNameInput();
   score = 0; combo = 0; bestCombo = 0; caught = 0; missed = 0; elapsed = 0; timeBonus = 0; newHi = false;
+  falls = 0; fallT = 0; respawnBlink = 0;
   particles = []; popups = []; flyers = []; trail = []; catchNote = 0;
 }
 function startGame() {
   if (!meta || !HMAP) return;
-  audio(); resetRun(); phase = "countdown"; countdown = 3.0; sfx.beep(false);
+  audio(); musicStop(); resetRun(); phase = "countdown"; countdown = 3.0; sfx.beep(false);
   canvas.focus();
 }
+const worldW = () => meta.width * PX;
+const screenX = (wx) => CAM_X + (wx - sx);
 const toY = (t) => SLED_Y - (t - tNow) * meta.art_px_per_t * PX;
+const xOfSigma = (s) => (s - meta.sigma_min) * meta.art_px_per_sigma * PX;
 const sigmaOfX = (x) => meta.sigma_min + x / (meta.art_px_per_sigma * PX);
 
 // bilinear height in [h_min, h_max]
@@ -252,13 +530,18 @@ function heightAt(sigma, t) {
 // =================================================================== input
 const KEYMAP = { ArrowLeft:"left", ArrowRight:"right", ArrowUp:"up", ArrowDown:"down", KeyA:"left", KeyD:"right", KeyW:"up", KeyS:"down" };
 window.addEventListener("keydown", (e) => {
+  if (document.activeElement === nameEl) {
+    if (e.code === "Enter") { e.preventDefault(); submitName(); } else if (e.code === "Escape") { e.preventDefault(); skipName(); }
+    return;
+  }
+  if (phase === "title" && (e.code === "ArrowLeft" || e.code === "ArrowRight")) { e.preventDefault(); switchTrack(e.code === "ArrowLeft" ? -1 : 1); return; }
   if (KEYMAP[e.code]) { e.preventDefault(); const k = KEYMAP[e.code]; if (k === "up" && !keys.up && phase === "play") sfx.boost(); keys[k] = true; }
-  if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); if (phase === "title" || phase === "end") startGame(); else if (phase === "paused") resume(); }
+  if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); if (phase === "title" || (phase === "end" && endStage === "board")) startGame(); else if (phase === "paused") resume(); }
   if (e.code === "KeyP" || e.code === "Escape") { if (phase === "play") pause(); else if (phase === "paused") resume(); }
   if (e.code === "KeyM") setMuted(!muted);
   if (e.code === "KeyC" && phase === "end") copyScorecard();
 });
-window.addEventListener("keyup", (e) => { if (KEYMAP[e.code]) { e.preventDefault(); keys[KEYMAP[e.code]] = false; } });
+window.addEventListener("keyup", (e) => { if (document.activeElement === nameEl) return; if (KEYMAP[e.code]) { e.preventDefault(); keys[KEYMAP[e.code]] = false; } });
 window.addEventListener("blur", () => { focused = false; Object.keys(keys).forEach(k => keys[k] = false); if (phase === "play") pause(); });
 window.addEventListener("focus", () => { focused = true; });
 function pause() { phase = "paused"; musicStop(); }
@@ -271,23 +554,38 @@ canvas.addEventListener("pointerdown", (e) => {
   const p = toLogical(e);
   const b = buttons.find(b => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
   if (b) { e.preventDefault(); b.act(); return; }
-  if (phase === "title") { startGame(); return; }
+  if (phase === "end" && endStage === "entry") { e.preventDefault(); nameEl.focus(); return; }
+  if (phase === "title") { if (p.x < PF_W) startGame(); return; }
   if (phase === "paused") { resume(); return; }
-  if (phase === "play" && p.x < PF_W) { e.preventDefault(); pointerSteer = p.x < sx ? -1 : 1; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
+  if (phase === "play" && p.x < PF_W) { e.preventDefault(); pointerSteer = p.x < CAM_X ? -1 : 1; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
 });
 canvas.addEventListener("pointerup", () => { pointerSteer = 0; });
 canvas.addEventListener("pointercancel", () => { pointerSteer = 0; });
 
 // =================================================================== game logic
-function cruise(t) { return 1.05 + 0.011 * t; }
+// t-units per second; the zoomed-in map makes this ~1.4x faster on screen than before
+function cruise(t) { return 0.82 + 0.0095 * t; }
 function update(dt) {
   if (phase === "countdown") {
     const before = Math.ceil(countdown); countdown -= dt; const after = Math.ceil(countdown);
     if (after !== before) { if (after > 0) sfx.beep(false); else { sfx.beep(true); phase = "play"; musicStart(); } }
     return;
   }
+  if (phase === "falling") {
+    elapsed += dt; fallT += dt;
+    if (fallT >= FALL_S) { phase = "respawn"; fallT = 0; fallFrom = sx; sfx.respawn(); }
+    return;
+  }
+  if (phase === "respawn") {
+    elapsed += dt; fallT += dt;
+    const p = Math.min(1, fallT / RESPAWN_S), e = 1 - Math.pow(1 - p, 3);
+    sx = fallFrom + (LINE_X - fallFrom) * e;        // camera glides back to the line
+    if (p >= 1) { phase = "play"; sx = LINE_X; vx = 0; ang = 0; angV = 0; respawnBlink = 1.4; trail = []; }
+    return;
+  }
   if (phase !== "play") return;
   elapsed += dt;
+  respawnBlink = Math.max(0, respawnBlink - dt);
   const sig = sigmaOfX(sx);
   // slopes (height per sigma, per t)
   const ds = 0.03, dtt = 0.06;
@@ -301,22 +599,38 @@ function update(dt) {
   tNow += vt * dt;
   // lateral: steering vs gravity sliding you off the hills
   const steer = (keys.left ? -1 : 0) + (keys.right ? 1 : 0) + pointerSteer;
-  const gravity = Math.max(-620, Math.min(620, -46 * gS));
+  const zoom = meta.art_px_per_sigma * PX / 150;          // slope push scales with the zoom
+  const gravity = Math.max(-620 * zoom, Math.min(620 * zoom, -46 * zoom * gS));
   vx += (steer * 1150 + gravity) * dt;
   vx *= Math.exp(-2.4 * dt);
   sx += vx * dt;
-  if (sx < 14) { sx = 14; vx = Math.abs(vx) * 0.5; sfx.bump(); shake = 4; }
-  if (sx > PF_W - 14) { sx = PF_W - 14; vx = -Math.abs(vx) * 0.5; sfx.bump(); shake = 4; }
+  if (sx < 0 || sx > worldW()) { fallIntoAbyss(); return; }
   // wobble: spring towards lean, kicked by bumps in the snow
   const lean = vx / 1500 + gravity / 5000;
   angV += ((lean - ang) * 60 - angV * 7) * dt;
   angV += (Math.random() - 0.5) * Math.min(8, Math.abs(gS) * 0.25 + vt * 1.2) * dt * 10;
   ang += angV * dt; ang = Math.max(-0.45, Math.min(0.45, ang));
-  // trail
-  if (!trail.length || Math.abs(trail[trail.length - 1].t - tNow) > 0.06) { trail.push({ x: sx, t: tNow }); if (trail.length > 90) trail.shift(); }
-  // spray when steering hard or boosting
-  if ((Math.abs(steer) && Math.random() < 0.6) || (keys.up && Math.random() < 0.5)) {
-    particles.push({ x: sx + (Math.random() - 0.5) * 30, y: SLED_Y + 26, vx: -vx * 0.05 + (Math.random() - 0.5) * 40, vy: 40 + Math.random() * 60, life: 0, max: 0.5, c: Math.random() < 0.7 ? COL.white : "#BFEFFF", s: 3 });
+  if (keys.up) usedBoost = true;
+  if (steer) usedSteer = true;
+  const skid = Math.min(1, Math.abs(vx) / 260);
+  // trail: denser and brighter while boosting, wider while skidding
+  const gap = keys.up ? 0.03 : 0.06;
+  if (!trail.length || Math.abs(trail[trail.length - 1].t - tNow) > gap) { trail.push({ x: sx, t: tNow, b: keys.up ? 1 : 0, k: skid }); if (trail.length > 180) trail.shift(); }
+  // boost: snow plume kicked out behind both runners
+  if (keys.up) for (let i = 0; i < 3; i++) {
+    const side = i % 2 ? 1 : -1;
+    particles.push({ x: CAM_X + side * (12 + Math.random() * 6), y: SLED_Y + 30, vx: side * (10 + Math.random() * 30) - vx * 0.1, vy: 140 + Math.random() * 120,
+      life: 0, max: 0.35 + Math.random() * 0.3, c: Math.random() < 0.75 ? COL.white : "#BFEFFF", s: Math.random() < 0.3 ? 6 : 3 });
+  }
+  // skid: runners carve sideways and throw an arc of snow outwards
+  if (skid > 0.35) {
+    const side = Math.sign(vx);
+    for (let i = 0; i < 1 + Math.round(skid * 3); i++)
+      particles.push({ x: CAM_X + side * (20 + Math.random() * 8), y: SLED_Y + 24 + Math.random() * 8, vx: side * (60 + Math.random() * 140 * skid), vy: -(40 + Math.random() * 110),
+        life: 0, max: 0.45 + Math.random() * 0.3, c: Math.random() < 0.6 ? COL.white : "#BFEFFF", s: Math.random() < 0.25 ? 6 : 3, g: 420 });
+    skidCooldown -= dt; if (skid > 0.6 && skidCooldown <= 0) { sfx.skid(); skidCooldown = 0.14; }
+  } else if (Math.abs(steer) && Math.random() < 0.4) {
+    particles.push({ x: CAM_X + (Math.random() - 0.5) * 30, y: SLED_Y + 26, vx: -vx * 0.05 + (Math.random() - 0.5) * 40, vy: 40 + Math.random() * 60, life: 0, max: 0.5, c: COL.white, s: 3 });
   }
   // baubles reached?
   for (const z of zeros) {
@@ -326,6 +640,13 @@ function update(dt) {
   }
   if (tNow > zeros[zeros.length - 1].t + 1.5) finish();
 }
+function fallIntoAbyss() {
+  phase = "falling"; fallT = 0; fallDir = sx < 0 ? -1 : 1; falls++; combo = 0; shake = 10;
+  const pen = Math.min(score, 250); score -= pen;
+  popups.push({ x: CAM_X, y: SLED_Y - 70, text: "INTO THE ABYSS", sub: pen ? "-" + pen : "", c: COL.red, life: 0 });
+  sfx.fall(); keysUpAll();
+}
+function keysUpAll() { Object.keys(keys).forEach(k => keys[k] = false); pointerSteer = 0; }
 function catchBauble(z, d) {
   z.state = "caught"; caught++; combo++; bestCombo = Math.max(bestCombo, combo);
   const rating = d <= PERFECT_R ? 2 : d <= GREAT_R ? 1 : 0;
@@ -335,15 +656,19 @@ function catchBauble(z, d) {
   const pts = Math.round((100 + 200 * close * close + (keys.up ? 50 : 0)) * mult);
   score += pts;
   const y = toY(z.t);
-  popups.push({ x: LINE_X, y: y - 30, text: ["GOOD", "GREAT", "PERFECT"][rating], sub: "+" + pts, c: [COL.cyan, COL.green, COL.gold][rating], life: 0 });
-  burst(LINE_X, SLED_Y, [COL.cyan, COL.pink, COL.white, COL.gold], rating === 2 ? 36 : 20, rating === 2 ? 260 : 180);
+  popups.push({ x: CAM_X, y: y - 30, text: ["GOOD", "GREAT", "PERFECT"][rating], sub: "+" + pts, c: [COL.cyan, COL.green, COL.gold][rating], life: 0 });
+  burst(CAM_X, SLED_Y, [COL.cyan, COL.pink, COL.white, COL.gold], rating === 2 ? 36 : 20, rating === 2 ? 260 : 180);
   flash = rating === 2 ? 0.35 : 0.18; flashCol = rating === 2 ? COL.gold : COL.cyan;
-  flyers.push({ z, x0: LINE_X, y0: SLED_Y - 10, t0: performance.now(), dur: 700 });
-  sfx.catchChime(rating, combo);
+  let dur = 700, landAt = null;
+  if (actx && musicOn) { landAt = nextOffbeat(actx.currentTime + 0.32); dur = (landAt - actx.currentTime) * 1000; }
+  else if (actx) landAt = actx.currentTime + dur / 1000;
+  flyers.push({ z, x0: CAM_X, y0: SLED_Y - 10, t0: performance.now(), dur, arc: 70 + dur * 0.12 });
+  sfx.catchTick();
+  sfx.catchChime(rating, combo, landAt);
 }
 function missBauble(z) {
   z.state = "missed"; missed++; combo = 0; sadUntil = performance.now() + 900; shake = 6;
-  popups.push({ x: LINE_X, y: SLED_Y - 40, text: "MISS", sub: "", c: COL.red, life: 0 });
+  popups.push({ x: CAM_X, y: SLED_Y - 40, text: "MISS", sub: "", c: COL.red, life: 0 });
   sfx.miss();
 }
 function burst(x, y, cols, n, sp) {
@@ -353,19 +678,53 @@ function burst(x, y, cols, n, sp) {
 function rankFor(n) { return n >= 30 ? "CRITICAL LINE LEGEND" : n >= 26 ? "BAUBLE BARON" : n >= 18 ? "PEAK BAGGER" : n >= 8 ? "SNOWPLOUGH APPRENTICE" : "LOST IN THE STRIP"; }
 function finish() {
   phase = "end"; musicStop(); sfx.fanfare();
-  timeBonus = Math.max(0, Math.round((95 - elapsed) * 25));
+  timeBonus = Math.max(0, Math.round((120 - elapsed) * 25));
   score += timeBonus;
   if (score > hiScore) { hiScore = score; newHi = true; try { localStorage.setItem("zerohunt_hi", String(hiScore)); } catch (_) {} }
   for (let i = 0; i < 4; i++) setTimeout(() => burst(60 + Math.random() * 330, 120 + Math.random() * 200, [COL.pink, COL.cyan, COL.gold, COL.white], 40, 260), i * 250);
+  runId = "zh_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+  myRank = null; buildScorecard();
+  endStage = "entry";
+  setTimeout(() => { if (phase === "end" && endStage === "entry") showNameInput(); }, 900);
+}
+const perfectCount = () => zeros.filter(z => z.state === "caught" && z.rating === 2).length;
+function buildScorecard() {
   const row = zeros.map(z => z.state === "caught" ? "■" : "□").join("");
-  const perfect = zeros.filter(z => z.state === "caught" && z.rating === 2).length;
   lastScorecard =
-    "ZERO HUNT | Octopus Data Advent\n" +
-    caught + "/" + N_ZEROS + " baubles | " + score.toLocaleString("en-GB") + " pts | max combo x" + bestCombo + " | " + perfect + " perfect | " + fmtTime(elapsed) + "\n" +
+    "ZERO HUNT | Octopus Data Advent" + (myRank ? " | #" + myRank + " on the global board" : "") + "\n" +
+    caught + "/" + N_ZEROS + " baubles | " + score.toLocaleString("en-GB") + " pts | max combo x" + bestCombo + " | " + perfectCount() + " perfect | " + falls + " falls | " + fmtTime(elapsed) + "\n" +
     row + "\n" +
     "All " + caught + " on the critical line Re(s) = 1/2, as Alpöge & Claude proved. Rank: " + rankFor(caught);
-  post("streamlit:setComponentValue", { value: { caught, total: N_ZEROS, score, best_combo: bestCombo, perfect, seconds: Math.round(elapsed * 10) / 10, rank: rankFor(caught), scorecard: lastScorecard, at: Date.now() }, dataType: "json" });
 }
+// ---------- name entry
+const nameEl = document.getElementById("nameInput");
+function showNameInput() {
+  let saved = ""; try { saved = localStorage.getItem("zerohunt_name") || ""; } catch (_) {}
+  nameEl.value = (saved || nameDefault || "").toUpperCase().slice(0, 16);
+  nameEl.style.display = "block"; nameEl.focus(); nameEl.select();
+}
+function hideNameInput() { nameEl.style.display = "none"; if (document.activeElement === nameEl) canvas.focus(); }
+function cleanName(v) { return (v || "").replace(/\s+/g, " ").replace(/[^\w .\-'&!]/g, "").trim().toUpperCase().slice(0, 16) || "ANON"; }
+function resultPayload(type, name) {
+  return { type, run_id: runId, name, caught, total: N_ZEROS, score, best_combo: bestCombo, perfect: perfectCount(), falls,
+           seconds: Math.round(elapsed * 10) / 10, rank: rankFor(caught), scorecard: lastScorecard, at: Date.now() };
+}
+function submitName() {
+  if (endStage !== "entry") return;
+  const name = cleanName(nameEl.value);
+  try { localStorage.setItem("zerohunt_name", name); } catch (_) {}
+  hideNameInput();
+  if (window.parent === window) { board = [{ run_id: runId, name, score, caught }].concat(board).sort((a, b) => b.score - a.score).slice(0, 10); myRank = board.findIndex(r => r.run_id === runId) + 1; endStage = "board"; buildScorecard(); return; }
+  endStage = "saving"; savingSince = performance.now();
+  post("streamlit:setComponentValue", { value: resultPayload("submit", name), dataType: "json" });
+  if (audio()) epiano(76, actx.currentTime, 0.06, 0.5);
+}
+function skipName() {
+  if (endStage !== "entry") return;
+  hideNameInput(); endStage = "board";
+  post("streamlit:setComponentValue", { value: resultPayload("skip", ""), dataType: "json" });
+}
+nameEl.addEventListener("input", () => { const c = nameEl.selectionStart; nameEl.value = nameEl.value.toUpperCase(); nameEl.setSelectionRange(c, c); });
 const fmtTime = (s) => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
 async function copyScorecard() {
   let ok = false;
@@ -411,22 +770,37 @@ function arrowKey(x, y, dir, lit) {
 // =================================================================== scene
 function drawTerrain(t) {
   ctx.save(); ctx.beginPath(); ctx.rect(0, 0, PF_W, H); ctx.clip();
-  ctx.fillStyle = COL.void; ctx.fillRect(0, 0, PF_W, H);
+  drawAbyss(t);
+  // world transform: Constantine pinned at (CAM_X, SLED_Y); the world slides and tilts under her
+  ctx.translate(CAM_X, SLED_Y); ctx.rotate(-ang * 0.55); ctx.translate(-Math.round(sx), -SLED_Y);
   if (terrainReady && meta) {
     const dy = Math.round(SLED_Y - (meta.t_max - tNow) * meta.art_px_per_t * PX);
     ctx.drawImage(terrainImg, 0, dy, meta.width * PX, meta.height * PX);
   }
+  drawCliffs(t);
   // critical line (dotted pixels) + strip edges
   const off = Math.round(((tNow * meta.art_px_per_t * PX) % 12));
   ctx.fillStyle = "rgba(0,240,255,0.35)";
   for (let y = -12 + off; y < H; y += 12) ctx.fillRect(LINE_X - 1, y, 3, 6);
   ctx.fillStyle = "rgba(240,80,248,0.18)";
-  for (let y = -24 + off; y < H; y += 24) { ctx.fillRect(150 - 1, y, 3, 3); ctx.fillRect(300 - 1, y, 3, 3); }
+  const e0 = Math.round(xOfSigma(0)), e1 = Math.round(xOfSigma(1));
+  for (let y = -24 + off; y < H; y += 24) { ctx.fillRect(e0 - 1, y, 3, 3); ctx.fillRect(e1 - 1, y, 3, 3); }
   // trail
   for (let i = 0; i < trail.length; i++) {
-    const p = trail[i], y = toY(p.t); if (y > H || y < SLED_Y) continue;
-    ctx.fillStyle = "rgba(191,239,255," + (0.08 + 0.3 * i / trail.length) + ")";
-    ctx.fillRect(Math.round(p.x - 14), Math.round(y), 3, 3); ctx.fillRect(Math.round(p.x + 11), Math.round(y), 3, 3);
+    const p = trail[i], y = Math.round(toY(p.t)); if (y > H + 20 || y < SLED_Y + 24) continue;
+    const age = i / trail.length, spread = 14 + Math.round(p.k * 6), x = Math.round(p.x);
+    if (p.b) {   // boosted: packed powder, bright double tracks with puffs between
+      ctx.fillStyle = "rgba(255,255,255," + (0.15 + 0.6 * age) + ")";
+      ctx.fillRect(x - spread - 3, y, 6, 3); ctx.fillRect(x + spread - 3, y, 6, 3);
+      if (i % 2 === 0) { ctx.fillStyle = "rgba(191,239,255," + (0.08 + 0.3 * age) + ")"; ctx.fillRect(x - 9 + (i * 7) % 15, y, 3 + (i % 3) * 3, 3); }
+    } else {
+      ctx.fillStyle = "rgba(191,239,255," + (0.08 + 0.3 * age) + ")";
+      ctx.fillRect(x - spread, y, 3, 3); ctx.fillRect(x + spread - 3, y, 3, 3);
+    }
+    if (p.k > 0.45) {   // skid gouges
+      ctx.fillStyle = "rgba(0,240,255," + (0.08 + 0.25 * age * p.k) + ")";
+      ctx.fillRect(x - spread - 6, y, 6, 3); ctx.fillRect(x + spread, y, 6, 3);
+    }
   }
   // baubles on the peaks
   zeros.forEach((z, i) => {
@@ -447,23 +821,68 @@ function drawTerrain(t) {
       ctx.fillRect(LINE_X - 7, y - 1, 3, 3); ctx.fillRect(LINE_X + 5, y - 1, 3, 3); ctx.fillRect(LINE_X - 1, y - 7, 3, 3); ctx.fillRect(LINE_X - 1, y + 5, 3, 3);
     }
   });
-  // t gauge on the left edge
+  ctx.restore(); ctx.save(); ctx.beginPath(); ctx.rect(0, 0, PF_W, H); ctx.clip();
+  // t gauge on the left edge (screen space)
   for (let tt = Math.ceil((tNow - 6) / 10) * 10; tt < tNow + 10; tt += 10) {
     const y = toY(tt); if (y < 8 || y > H - 16) continue;
     ctx.fillStyle = "rgba(4,0,12,.75)"; ctx.fillRect(4, y - 4, 60, 15);
     txt("T=" + tt, 8, y, 8, COL.grey);
     ctx.fillStyle = COL.dim; ctx.fillRect(66, y + 2, 9, 3);
   }
-  txt("RE(S)=1/2", LINE_X, 10, 8, "rgba(0,240,255,.7)", "center");
+  txt("RE(S)=1/2", Math.max(40, Math.min(PF_W - 40, screenX(LINE_X))), 10, 8, "rgba(0,240,255,.7)", "center");
+  // edge warning arrows when the abyss is on screen
+  const lx = screenX(0), rx = screenX(worldW());
+  if ((lx > -60 || rx < PF_W + 60) && phase === "play") {
+    const left = lx > -60, near = left ? CAM_X - lx : rx - CAM_X;   // px from Connie to the drop
+    const danger = Math.max(0, Math.min(1, 1 - (near - 40) / 220));
+    // yellow glow on the threatened side of the screen
+    const g = ctx.createLinearGradient(left ? 0 : PF_W, 0, left ? 90 : PF_W - 90, 0);
+    g.addColorStop(0, "rgba(255,225,77," + (0.12 + 0.3 * danger) + ")"); g.addColorStop(1, "rgba(255,225,77,0)");
+    ctx.fillStyle = g; ctx.fillRect(left ? 0 : PF_W - 90, 0, 90, H);
+    if (Math.floor(t / (danger > 0.6 ? 120 : 240)) % 2 === 0) {
+      const ex = left ? Math.max(14, lx + 14) : Math.min(PF_W - 14, rx - 14), ey = SLED_Y - 130;
+      txt(left ? "<< EDGE" : "EDGE >>", ex, ey, 16, COL.yellow, left ? "left" : "right", "#000000");
+      // hazard chevrons
+      for (let k = 0; k < 3; k++) { const cx = left ? ex + 12 + k * 15 : ex - 12 - k * 15, cy = ey + 34, d = left ? -1 : 1;
+        ctx.fillStyle = COL.yellow; for (let r = -2; r <= 2; r++) ctx.fillRect(cx + d * (2 - Math.abs(r)) * 3, cy + r * 3, 3, 3); }
+    }
+  }
   ctx.restore();
+}
+const stars = Array.from({ length: 90 }, () => ({ x: Math.random() * 1400 - 300, y: Math.random() * H, d: 0.15 + Math.random() * 0.5, c: Math.random() < 0.3 ? COL.pink : Math.random() < 0.5 ? COL.cyan : COL.white }));
+function drawAbyss(t) {
+  ctx.fillStyle = "#000000"; ctx.fillRect(0, 0, PF_W, H);
+  // deep parallax starfield, drifting upward as if falling past it
+  for (const s of stars) {
+    const x = ((s.x - sx * s.d) % 1400 + 1400) % 1400 - 300, y = ((s.y - tNow * 40 * s.d) % H + H) % H;
+    if (x < -3 || x > PF_W) continue;
+    ctx.globalAlpha = 0.25 + s.d; ctx.fillStyle = s.c; ctx.fillRect(Math.round(x / 3) * 3, Math.round(y / 3) * 3, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+}
+function drawCliffs(t) {
+  // icy cliff lips at both world edges, with a glow falling away into the void
+  const top = -40, bot = H + 40, ww = worldW();
+  [[0, -1], [ww, 1]].forEach(([x, dir]) => {
+    for (let i = 0; i < 6; i++) { ctx.fillStyle = "rgba(240,80,248," + (0.18 - i * 0.03) + ")"; ctx.fillRect(dir < 0 ? x - (i + 1) * 9 : x + i * 9, top, 9, bot - top); }
+    for (let y = Math.floor((top + tNow * 84) / 12) * 12 - tNow * 84; y < bot; y += 12) {
+      const k = Math.abs(Math.sin((y + tNow * 84) * 0.37)) * 3 | 0;
+      ctx.fillStyle = COL.white; ctx.fillRect(Math.round(x - 3 + (dir < 0 ? 0 : -3)), Math.round(y), 6, 12);
+      ctx.fillStyle = "#BFEFFF"; ctx.fillRect(Math.round(x + dir * 3), Math.round(y + 3), 3, 3 + k * 3);   // icicles
+    }
+  });
 }
 function drawSled(t) {
   const now = performance.now(), sad = now < sadUntil;
   const frame = Math.floor(t / 140) % 2;
   const bob = phase === "play" ? Math.round(Math.sin(t / 70) * 1.5 * Math.min(1.5, vt)) : Math.round(Math.sin(t / 300) * 2);
   // shadow
-  ctx.fillStyle = "rgba(0,0,0,.45)"; ctx.fillRect(Math.round(sx - 33), SLED_Y + 30, 66, 6);
-  ctx.save(); ctx.translate(Math.round(sx), SLED_Y + bob); ctx.rotate(ang);
+  let cx = CAM_X, cy = SLED_Y + bob, sc = 1, rot = ang;
+  if (phase === "falling") { const p = fallT / FALL_S; sc = Math.max(0.05, 1 - p); rot = fallDir * p * 9; cx += fallDir * p * 40; cy += p * p * 140; }
+  if (phase === "respawn") { const p = fallT / RESPAWN_S; cy = -60 + (SLED_Y + 60) * Math.min(1, p * 1.25); }
+  if ((phase === "play" && respawnBlink > 0 && Math.floor(respawnBlink * 10) % 2 === 0)) return;
+  if (phase !== "falling") { ctx.fillStyle = "rgba(0,0,0,.45)"; ctx.fillRect(Math.round(CAM_X - 33), SLED_Y + 30, 66, 6); }
+  ctx.save(); ctx.translate(Math.round(cx), Math.round(cy)); ctx.rotate(rot); ctx.scale(sc, sc);
   ctx.drawImage(sprSled, -sprSled.width / 2, 8);
   const spr = sad ? sprConnieSad : sprConnie[frame];
   ctx.drawImage(spr, -spr.width / 2, -spr.height + 20);
@@ -471,7 +890,7 @@ function drawSled(t) {
   // catch window hint under the sled (shows how close you are to the line)
   if (phase === "play") {
     const d = Math.abs(sx - LINE_X), c = d <= PERFECT_R ? COL.gold : d <= GREAT_R ? COL.green : d <= CATCH_R ? COL.cyan : COL.red;
-    ctx.fillStyle = c; ctx.fillRect(Math.round(sx) - 1, SLED_Y + 40, 3, 6);
+    ctx.fillStyle = c; ctx.fillRect(CAM_X - 1, SLED_Y + 40, 3, 6);
   }
 }
 function drawPanel(t) {
@@ -482,19 +901,20 @@ function drawPanel(t) {
   txt("ZERO HUNT", x + w / 2, 22, 14, COL.pink, "center", COL.pinkD);
   txt("ACT 1", x + w / 2, 44, 8, COL.cyan, "center");
   const row = (label, value, y, col = COL.white) => { txt(label, L, y, 8, COL.grey); txt(value, R, y + 12, 12, col, "right"); };
-  row("SCORE", String(score).padStart(7, "0"), 70, COL.white);
-  row("HI-SCORE", String(Math.max(hiScore, score)).padStart(7, "0"), 104, COL.gold);
-  row("BAUBLES", String(caught).padStart(2, "0") + "/" + N_ZEROS, 138, COL.cyan);
-  row("COMBO", "X" + combo, 172, combo > 1 ? COL.pink : COL.white);
-  row("TIME", fmtTime(elapsed), 206, COL.white);
+  row("SCORE", String(score).padStart(7, "0"), 64, COL.white);
+  row("HI-SCORE", String(Math.max(hiScore, score)).padStart(7, "0"), 94, COL.gold);
+  row("BAUBLES", String(caught).padStart(2, "0") + "/" + N_ZEROS, 124, COL.cyan);
+  row("COMBO", "X" + combo, 154, combo > 1 ? COL.pink : COL.white);
+  row("FALLS", String(falls), 184, falls ? COL.red : COL.white);
+  row("TIME", fmtTime(elapsed), 214, COL.white);
   // speed bar (segmented)
-  txt("SPEED", L, 240, 8, COL.grey);
-  const segs = 10, sp = phase === "play" ? Math.min(1, vt / 3.2) : 0;
-  for (let i = 0; i < segs; i++) { ctx.fillStyle = i < Math.round(sp * segs) ? (i > 6 ? COL.pink : COL.cyan) : COL.line; ctx.fillRect(L + i * 18, 254, 14, 9); }
+  txt("SPEED", L, 248, 8, COL.grey);
+  const segs = 10, sp = phase === "play" ? Math.min(1, vt / 2.6) : 0;
+  for (let i = 0; i < segs; i++) { ctx.fillStyle = i < Math.round(sp * segs) ? (i > 6 ? COL.pink : COL.cyan) : COL.line; ctx.fillRect(L + i * 18, 262, 14, 9); }
   drawTree(x + w / 2, 286, t);
   // controls
   txt("CONTROLS", L, 488, 8, COL.grey);
-  arrowKey(L + 34, 502, "up", keys.up); arrowKey(L, 536, "left", keys.left); arrowKey(L + 34, 536, "down", keys.down); arrowKey(L + 68, 536, "right", keys.right);
+  arrowKey(L + 34, 502, "up", keys.up || (phase === "play" && !usedBoost && Math.floor(t / 250) % 2 === 0)); arrowKey(L, 536, "left", keys.left); arrowKey(L + 34, 536, "down", keys.down); arrowKey(L + 68, 536, "right", keys.right);
   txt("BOOST", L + 110, 508, 8, COL.white); txt("STEER", L + 110, 532, 8, COL.white); txt("BRAKE", L + 110, 556, 8, COL.white);
   txt("M:SOUND " + (muted ? "OFF" : "ON"), L, 580, 8, muted ? COL.red : COL.grey);
   buttons.push({ id:"mute", x: L, y: 576, w: 150, h: 16, act: () => setMuted(!muted) });
@@ -533,7 +953,7 @@ function treeSlot(i) {
 function drawFx(dt, now) {
   // flying baubles to tree
   flyers = flyers.filter(f => { const p = Math.min(1, (now - f.t0) / f.dur), e = 1 - Math.pow(1 - p, 3), s = treeSlot(f.z.slot);
-    const x = f.x0 + (s.x - f.x0) * e, y = f.y0 + (s.y - f.y0) * e - Math.sin(Math.PI * p) * 120;
+    const x = f.x0 + (s.x - f.x0) * e, y = f.y0 + (s.y - f.y0) * e - Math.sin(Math.PI * p) * (f.arc || 120);
     ctx.drawImage(sprBaubles[f.z.slot % 4], Math.round(x - 10), Math.round(y - 12));
     if (Math.random() < 0.7) particles.push({ x, y, vx: 0, vy: 20, life: 0, max: 0.3, c: BAUBLE_COLS[f.z.slot % 4][0], s: 3 });
     if (p >= 1) { burst(s.x, s.y, [BAUBLE_COLS[f.z.slot % 4][0], COL.white], 10, 90); return false; } return true; });
@@ -557,6 +977,15 @@ for (let i = 0; i < 60; i++) flakes.push({ x: Math.random() * W, y: Math.random(
 function dimPF(a) { ctx.fillStyle = "rgba(4,0,12," + a + ")"; ctx.fillRect(0, 0, PF_W, H); }
 function drawTitle(t) {
   dimPF(0.55);
+  // attract mode: alternate with the global high-score table
+  if (board.length && Math.floor(t / 8000) % 2 === 1) {
+    txt("HIGH SCORES", PF_W / 2, 40, 22, COL.cyan, "center", COL.cyanD);
+    txt("OCTOPUS DATA DEPT - ALL PLAYERS", PF_W / 2, 78, 8, COL.grey, "center");
+    drawBoard(112, 10, null);
+    drawMusicPicker(t, 452);
+    if (Math.floor(t / 450) % 2 === 0) txt(focused ? "PRESS SPACE TO START" : "CLICK TO START", PF_W / 2, 572, 12, COL.gold, "center", COL.void);
+    return;
+  }
   const wob = Math.round(Math.sin(t / 400) * 3);
   txt("ZERO", PF_W / 2, 74 + wob, 48, COL.pink, "center", COL.pinkD);
   txt("HUNT", PF_W / 2, 132 + wob, 48, COL.cyan, "center", COL.cyanD);
@@ -565,42 +994,113 @@ function drawTitle(t) {
   const by = 238 + Math.round(Math.sin(t / 200) * 4);
   ctx.drawImage(sprSledBig, PF_W / 2 - sprSledBig.width / 2, by + 112);
   ctx.drawImage(big, PF_W / 2 - big.width / 2, by);
-  txt("RACE UP THE SNOWY PEAKS", PF_W / 2, 412, 9, COL.white, "center");
-  txt("ON THE CRITICAL LINE.", PF_W / 2, 428, 9, COL.white, "center");
-  txt("GRAB THE BAUBLES. CLOSER = MORE", PF_W / 2, 450, 9, COL.cyan, "center");
-  txt("POINTS. MIND THE SLOPES.", PF_W / 2, 466, 9, COL.cyan, "center");
-  if (Math.floor(t / 450) % 2 === 0) txt(focused ? "PRESS SPACE TO START" : "CLICK TO START", PF_W / 2, 512, 12, COL.gold, "center", COL.void);
-  txt("(C) 1859 B. RIEMANN", PF_W / 2, 560, 8, COL.grey, "center");
-  txt("PROVEN 2026 L. ALPOGE + CLAUDE", PF_W / 2, 576, 8, COL.grey, "center");
-  txt("OCTOPUS DATA ADVENT", PF_W / 2, 600, 8, COL.pink, "center");
-  if (!HMAP || !terrainReady) txt("LOADING TERRAIN...", PF_W / 2, 630, 8, COL.white, "center");
+  txt("RACE UP THE SNOWY PEAKS ON THE", PF_W / 2, 396, 9, COL.white, "center");
+  txt("CRITICAL LINE. GRAB THE BAUBLES.", PF_W / 2, 412, 9, COL.white, "center");
+  txt("CLOSER = MORE POINTS.", PF_W / 2, 428, 9, COL.cyan, "center");
+  drawMusicPicker(t, 452);
+  if (Math.floor(t / 450) % 2 === 0) txt(focused ? "PRESS SPACE TO START" : "CLICK TO START", PF_W / 2, 572, 12, COL.gold, "center", COL.void);
+  txt("(C) 1859 B. RIEMANN  PROVEN 2026 L. ALPOGE + CLAUDE", PF_W / 2, 606, 7, COL.grey, "center");
+  txt("OCTOPUS DATA ADVENT", PF_W / 2, 624, 8, COL.pink, "center");
+  if (!HMAP || !terrainReady) txt("LOADING TERRAIN...", PF_W / 2, 642, 8, COL.white, "center");
+}
+function drawMusicPicker(t, y) {
+  const w = 280, x = PF_W / 2 - w / 2;
+  const row = (yy, label, value, hint, onL, onR, id) => {
+    box(x, yy, w, 36, COL.deep, COL.line);
+    txt(label, x + 14, yy + 14, 8, COL.grey);
+    txt(value, x + w / 2 + 24, yy + 11, 12, COL.cyan, "center");
+    arrowKeySmall(x + 74, yy + 6, "left"); arrowKeySmall(x + w - 34, yy + 6, "right");
+    buttons.push({ id: id + "L", x: x + 66, y: yy, w: 40, h: 36, act: onL });
+    buttons.push({ id: id + "R", x: x + w - 42, y: yy, w: 40, h: 36, act: onR });
+  };
+  row(y, "MUSIC", track().name, "", () => switchTrack(-1), () => switchTrack(1), "trk");
+  txt("<-/-> TO CHANGE AND PREVIEW", PF_W / 2, y + 46, 7, COL.grey, "center");
+}
+function arrowKeySmall(x, y, dir) {
+  ctx.fillStyle = COL.pink; const c = x + 12, m = y + 12, d = dir === "left" ? -1 : 1;
+  for (let r = -3; r <= 3; r++) ctx.fillRect(c + d * (3 - Math.abs(r)) * 3 - 1, m + r * 3, 3, 3);
+}
+function drawTutorial(t) {
+  if (phase !== "play" || !zeros[0] || zeros[0].state !== "up") return;
+  if (screenX(0) > -60 || screenX(worldW()) < PF_W + 60) return;      // the edge warning takes priority
+  const blink = Math.floor(t / 280) % 2 === 0, y = SLED_Y + 84;
+  if (!usedSteer && elapsed < 2.2) {
+    arrowKey(CAM_X - 52, y, "left", blink); arrowKey(CAM_X + 22, y, "right", blink);
+    txt("STEER", CAM_X, y + 42, 10, COL.white, "center", COL.void);
+  } else if (!usedBoost) {
+    ctx.fillStyle = "rgba(4,0,12,.8)"; ctx.fillRect(CAM_X - 118, y - 10, 236, 92);
+    ctx.fillStyle = COL.gold; ctx.fillRect(CAM_X - 118, y - 10, 236, 3); ctx.fillRect(CAM_X - 118, y + 79, 236, 3);
+    arrowKey(CAM_X - 15, y, "up", blink);
+    txt("HOLD UP TO BOOST!", CAM_X, y + 42, 12, blink ? COL.gold : COL.white, "center", COL.void);
+    txt("+50 PTS PER BOOSTED CATCH", CAM_X, y + 62, 8, COL.cyan, "center");
+  }
+}
+function drawSpeedLines(t) {
+  if (phase !== "play" || !keys.up) return;
+  ctx.fillStyle = "rgba(255,255,255,0.16)";
+  for (let i = 0; i < 16; i++) {
+    const x = (i * 97 + 31) % PF_W, len = 30 + (i * 37) % 60;
+    const y = ((t * (0.9 + (i % 5) * 0.12) + i * 211) % (H + 120)) - 120;
+    ctx.fillRect(Math.round(x / 3) * 3, Math.round(y), 3, len);
+  }
+}
+function drawBoard(top, rowsShown, highlightId) {
+  txt("RANK", 28, top, 8, COL.grey); txt("NAME", 92, top, 8, COL.grey); txt("SCORE", PF_W - 96, top, 8, COL.grey, "right"); txt("BBL", PF_W - 28, top, 8, COL.grey, "right");
+  for (let i = 0; i < rowsShown; i++) {
+    const r = board[i], y = top + 22 + i * 24;
+    const mine = r && r.run_id === highlightId;
+    if (mine) { ctx.fillStyle = Math.floor(performance.now() / 300) % 2 ? "rgba(255,209,102,.28)" : "rgba(240,80,248,.25)"; ctx.fillRect(18, y - 6, PF_W - 36, 22); }
+    const col = i === 0 ? COL.gold : i < 3 ? COL.cyan : COL.white;
+    const ord = ["1ST", "2ND", "3RD"][i] || (i + 1) + "TH";
+    txt(ord, 28, y, 10, r ? col : COL.dim);
+    txt(r ? r.name : "---", 92, y, 10, r ? (mine ? COL.gold : COL.white) : COL.dim);
+    txt(r ? String(r.score).padStart(6, "0") : "------", PF_W - 96, y, 10, r ? col : COL.dim, "right");
+    txt(r ? String(r.caught).padStart(2, "0") : "--", PF_W - 28, y, 10, r ? COL.green : COL.dim, "right");
+  }
 }
 function drawCountdown() {
   const n = Math.ceil(countdown), frac = countdown - Math.floor(countdown);
   const size = 40 + Math.round(frac * 30);
-  txt(String(n), LINE_X, SLED_Y - 160 - size / 2, size, COL.gold, "center", COL.pinkD);
-  txt("GET READY", LINE_X, SLED_Y - 200, 10, COL.white, "center", COL.void);
+  txt(String(n), CAM_X, SLED_Y - 160 - size / 2, size, COL.gold, "center", COL.pinkD);
+  txt("GET READY", CAM_X, SLED_Y - 200, 10, COL.white, "center", COL.void);
 }
 function drawPaused() { dimPF(0.6); txt("PAUSED", PF_W / 2, 260, 28, COL.cyan, "center", COL.cyanD);
   if (Math.floor(performance.now() / 450) % 2 === 0) txt("CLICK OR SPACE TO RESUME", PF_W / 2, 320, 9, COL.white, "center"); }
 function drawEnd(t) {
-  dimPF(0.72);
-  const allIn = caught === N_ZEROS;
-  txt(allIn ? "PERFECT CLIMB!" : "SUMMIT!", PF_W / 2, 52, allIn ? 24 : 32, COL.gold, "center", COL.pinkD);
-  txt(rankFor(caught), PF_W / 2, 104, 12, COL.pink, "center", COL.void);
-  const perfect = zeros.filter(z => z.state === "caught" && z.rating === 2).length;
-  const lines = [["BAUBLES", caught + "/" + N_ZEROS], ["PERFECT", String(perfect)], ["MAX COMBO", "X" + bestCombo], ["TIME", fmtTime(elapsed)], ["TIME BONUS", "+" + timeBonus], ["TOTAL", String(score)]];
-  lines.forEach(([a, b], i) => { const y = 148 + i * 26; txt(a, 70, y, 10, i === 5 ? COL.white : COL.grey); txt(b, PF_W - 70, y, 10, i === 5 ? COL.gold : COL.white, "right"); });
-  if (newHi && Math.floor(t / 300) % 2 === 0) txt("NEW HI-SCORE!", PF_W / 2, 316, 14, COL.cyan, "center", COL.cyanD);
-  // the line of baubles, as a strip
-  zeros.forEach((z, i) => { const spr = z.state === "caught" ? sprBaublesSmall[i % 4] : sprBaubleSmallDead; ctx.drawImage(spr, 40 + i * 12.5, 350); });
-  txt("ALL " + caught + " ON RE(S)=1/2", PF_W / 2, 380, 8, COL.green, "center");
-  txt("JUST AS ALPOGE + CLAUDE PROVED", PF_W / 2, 394, 8, COL.green, "center");
+  dimPF(0.78);
+  const strip = (y) => zeros.forEach((z, i) => ctx.drawImage(z.state === "caught" ? sprBaublesSmall[i % 4] : sprBaubleSmallDead, 40 + i * 12.5, y));
+  if (endStage === "entry" || endStage === "saving") {
+    const allIn = caught === N_ZEROS;
+    txt(allIn ? "PERFECT CLIMB!" : "SUMMIT!", PF_W / 2, 34, allIn ? 24 : 32, COL.gold, "center", COL.pinkD);
+    txt(rankFor(caught), PF_W / 2, 84, 12, COL.pink, "center", COL.void);
+    const lines = [["BAUBLES", caught + "/" + N_ZEROS], ["PERFECT", String(perfectCount())], ["MAX COMBO", "X" + bestCombo], ["FALLS", String(falls)], ["TIME BONUS", "+" + timeBonus], ["TOTAL", String(score)]];
+    lines.forEach(([a, b], i) => { const y = 118 + i * 22; txt(a, 70, y, 10, i === 5 ? COL.white : COL.grey); txt(b, PF_W - 70, y, 10, i === 5 ? COL.gold : COL.white, "right"); });
+    if (endStage === "entry") {
+      txt("ENTER YOUR NAME FOR THE", PF_W / 2, 270, 9, COL.white, "center");
+      txt("GLOBAL SCOREBOARD", PF_W / 2, 286, 12, COL.cyan, "center", COL.cyanD);
+      button("submit", 75, 378, 300, 36, "[ENTER] SUBMIT", submitName, true);
+      button("skip", 75, 424, 300, 30, "[ESC] SKIP", skipName, false);
+    } else {
+      if (Math.floor(t / 250) % 2 === 0) txt("SAVING...", PF_W / 2, 330, 14, COL.cyan, "center", COL.cyanD);
+      if (performance.now() - savingSince > 6000) { endStage = "board"; }
+    }
+    strip(486); txt("ALL " + caught + " ON RE(S)=1/2", PF_W / 2, 516, 8, COL.green, "center");
+    txt("JUST AS ALPOGE + CLAUDE PROVED", PF_W / 2, 530, 8, COL.green, "center");
+    return;
+  }
+  // board
+  txt("HIGH SCORES", PF_W / 2, 24, 22, COL.cyan, "center", COL.cyanD);
+  drawBoard(66, 10, runId);
+  let y = 330;
+  if (myRank) txt(myRank <= 10 ? "YOU PLACED #" + myRank + "!" : "YOU: #" + myRank + "  " + score + " PTS", PF_W / 2, y, 12, COL.gold, "center", COL.void);
+  else txt("YOUR SCORE: " + score, PF_W / 2, y, 12, COL.gold, "center", COL.void);
+  if (newHi && Math.floor(t / 300) % 2 === 0) txt("NEW PERSONAL BEST!", PF_W / 2, y + 22, 9, COL.pink, "center");
+  strip(372);
   const copied = performance.now() < copyMsgUntil;
-  button("copy", 60, 430, PF_W - 120, 40, copied ? (copyOk ? "COPIED! PASTE IN SLACK" : "COPY FAILED: USE BOX BELOW") : "[C] COPY SLACK SCORECARD", copyScorecard, false);
-  button("again", 60, 482, PF_W - 120, 40, "[SPACE] CLIMB AGAIN", startGame, true);
-  txt("ACT 2 COMING SOON:", PF_W / 2, 548, 8, COL.grey, "center");
-  txt("YOUR BAUBLES LIGHT THE PRIMES", PF_W / 2, 562, 8, COL.grey, "center");
+  button("copy", 60, 410, PF_W - 120, 38, copied ? (copyOk ? "COPIED! PASTE IN SLACK" : "COPY FAILED: USE BOX BELOW") : "[C] COPY SLACK SCORECARD", copyScorecard, false);
+  button("again", 60, 458, PF_W - 120, 38, "[SPACE] CLIMB AGAIN", startGame, true);
+  txt("ACT 2 COMING SOON:", PF_W / 2, 520, 8, COL.grey, "center");
+  txt("YOUR BAUBLES LIGHT THE PRIMES", PF_W / 2, 534, 8, COL.grey, "center");
 }
 
 // =================================================================== loop
@@ -611,17 +1111,19 @@ function frame(t) {
   buttons = [];
   ctx.fillStyle = COL.void; ctx.fillRect(0, 0, W, H);
   if (!meta) { txt("LOADING...", W / 2, H / 2, 12, COL.white, "center"); requestAnimationFrame(frame); return; }
-  if (phase === "title") tNow = 2.5 + ((t / 1000) * 1.2) % 90;   // attract-mode scroll
+  if (phase === "title") { tNow = 2.5 + ((t / 1000) * 1.2) % 90; sx = LINE_X + Math.sin(t / 2200) * 260; }   // attract-mode pan
   update(dt);
   ctx.save();
   if (shake > 0.2) { ctx.translate(Math.round((Math.random() - 0.5) * shake), Math.round((Math.random() - 0.5) * shake)); shake *= 0.85; }
   drawTerrain(t);
+  drawSpeedLines(t);
   if (phase !== "title") drawSled(t);
   drawPanel(t);
   drawFx(dt, now);
   drawSnow(dt);
   if (phase === "title") drawTitle(t);
   if (phase === "countdown") drawCountdown();
+  drawTutorial(t);
   if (phase === "paused") drawPaused();
   if (phase === "end") drawEnd(t);
   ctx.restore();
@@ -632,7 +1134,9 @@ function frame(t) {
 resize();
 post("streamlit:componentReady", { apiVersion: 1 });
 requestAnimationFrame(frame);
-window.__zh = { state: () => ({ tNow, sx, phase, score, caught, missed, combo, zeros }), keys, start: startGame };
+window.__zh = { renderDemo, state: () => ({ tNow, sx, lineX: LINE_X, falls, phase, score, caught, missed, combo, zeros, endStage, myRank, board, usedBoost, track: track().id }), keys, start: startGame, switchTrack,
+  offbeatCheck: () => { if (!actx || !musicOn) return null; const now = actx.currentTime, o = nextOffbeat(now + 0.32);
+    return { track: track().id, beatPos: +(((o - musicT0) / spb()) % 1).toFixed(4), swing: track().swing, delay: +(o - now).toFixed(3) }; } };
 })();
 </script>
 </body>
