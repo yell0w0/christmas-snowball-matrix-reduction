@@ -20,21 +20,18 @@ time. Music is a swing chiptune bassline over ii-V-I changes, and the catch chim
   every app replica sees the same file. Swap `submit`/`top` for your warehouse if you'd rather keep it there. If the
   data app has login (`st.user`), the name box is pre-filled from it. Scores are submitted by the browser, so treat the
   board as friendly competition rather than tamper-proof.
-* Music: a small jazz trio in Web Audio (piano with hammer-shaped harmonics and two detuned strings, or an FM Rhodes
-  with stereo tremolo, chosen per tune with up/down on the title screen; upright bass; a dark noise-wash ride and
-  hi-hat; room reverb), harmonised after Jazzology (Rawlins & Bahha):
-  * SWING: I-VI-ii-V in C (Cmaj9, A7alt, Dm9, G13, Em7). Rootless type A/B left-hand voicings that switch on
-    4th/5th root motion.
-  * BLUES: the book's jazz-blues in F (F13, Bb13, Cm9-F13, B°7, D7alt, Gm9, C13, Am9-D7alt, Gm9-C7alt).
-  * MODAL: 16 bars of D dorian, 8 of Eb dorian and 8 of D, with So What voicings planed diatonically under the melody. Comping is
-    sparse: a catch within a beat of the last one answers with just the melody note.
+* Music: a small jazz trio in Web Audio (FM Rhodes with stereo tremolo, or a piano with hammer-shaped harmonics;
+  upright bass; dark noise-wash ride and hi-hat; room reverb), harmonised after Jazzology (Rawlins & Bahha):
+  * SWING (Rhodes): I-VI-ii-V in C (Cmaj9, A7alt, Dm9, G13, Em7). Rootless type A/B left-hand voicings that switch
+    on 4th/5th root motion.
+  * BLUES (piano): the book's jazz-blues in F (F13, Bb13, Cm9-F13, B°7, D7alt, Gm9, C13, Am9-D7alt, Gm9-C7alt).
 
   Walking bass is generated per tune: roots on changes, scale steps between, and chromatic or dominant approach notes.
-  The background pianist comps with Jazzology swing rhythms, anticipating the next chord on the "and" of 4, and lays
-  out while you play. **You are the comping pianist**: each catch ticks instantly, then the bauble lands on the next
-  swung off-beat as a piano chord. That chord is the left-hand voicing plus a Garland-style right hand with the melody
-  on top. GREAT doubles the melody at the octave, PERFECT fills in a block chord or a planing slide, and every fifth
-  catch in a combo adds a crushed grace note. `__zh.renderDemo(id)` renders any tune offline to a WAV file.
+  The background pianist comps with Jazzology swing rhythms and lays out while you play. **You are the comping
+  pianist**: each catch ticks instantly, then lands on the next swung off-beat as a chord. That chord is the left-hand
+  voicing plus a Garland-style right hand with the melody on top. GREAT doubles the melody at the octave, PERFECT fills
+  in a block chord, and every fifth catch in a combo adds a crushed grace note. `__zh.renderDemo(id)` renders a tune
+  offline to a WAV file.
 * Tuning knobs: `cruise()`, the gravity factor (`-46 * gS`), `CATCH_R`, `GREAT_R` and `PERFECT_R` in `index.html`.
 
 ---

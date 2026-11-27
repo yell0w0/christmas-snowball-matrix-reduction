@@ -153,7 +153,7 @@ const crt = document.createElement("canvas"); crt.width = W; crt.height = H;
 // velocity-sensitive brightness), upright bass, ride + hi-hat, a little room reverb.
 // Harmony follows Jazzology (Rawlins & Bahha): rootless type A/B voicings with
 // A<->B switches on root motion by 4ths/5ths, Garland-style right-hand block chords,
-// So What voicings planed diatonically for the modal tune, swing comping rhythms.
+// the book's jazz-blues in F, swing comping rhythms. SWING plays on Rhodes, BLUES on piano.
 let actx = null, master = null, musicBus = null, rhodesBus = null, verbIn = null, pianoWave = null, muted = false;
 function buildGraph(ctx) {
   actx = ctx;
@@ -224,7 +224,7 @@ function pianoNote(midi, t0, vel = 0.5, dur = 0.8) {
   const a = actx; if (!a || !pianoWave) return;
   dur = Math.max(0.16, dur);
   const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48));
-  const peak = 0.012 + 0.048 * vel * vel;
+  const peak = 0.0085 + 0.034 * vel * vel;
   const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.3;
   lp.frequency.setValueAtTime(Math.min(13000, f * (2.5 + 9 * vel) + 500), t0);
   lp.frequency.exponentialRampToValueAtTime(Math.max(f * 1.6, 420), t0 + 0.3 + 0.9 * low);
@@ -245,7 +245,7 @@ function pianoNote(midi, t0, vel = 0.5, dur = 0.8) {
 function rhodesNote(midi, t0, vel = 0.5, dur = 0.8) {
   const a = actx; if (!a || !rhodesBus) return;
   dur = Math.max(0.16, dur);
-  const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48)), peak = 0.015 + 0.045 * vel;
+  const f = hz(midi), low = Math.max(0, Math.min(1, (88 - midi) / 48)), peak = 0.0106 + 0.032 * vel;
   const car = a.createOscillator(), mod = a.createOscillator(), idx = a.createGain(), g = a.createGain();
   car.frequency.value = f; mod.frequency.value = f;
   const I = f * (0.4 + 2.6 * vel * vel);                                   // harder = more bark
@@ -261,26 +261,16 @@ function rhodesNote(midi, t0, vel = 0.5, dur = 0.8) {
   tine.connect(tg).connect(rhodesBus);
   [car, mod, tine].forEach(o => { o.start(t0); o.stop(t0 + dur + 0.8); });
 }
-// per-tune keyboard: piano or Rhodes (remembered per tune)
-const KEYS_DEFAULT = { swing: "piano", blues: "rhodes", modal: "rhodes" };
-let keysPref = Object.assign({}, KEYS_DEFAULT);
-try { Object.assign(keysPref, JSON.parse(localStorage.getItem("zerohunt_keys") || "{}")); } catch (_) {}
-const keysName = () => keysPref[track().id] === "rhodes" ? "RHODES" : "PIANO";
-function keyNote(midi, t0, vel, dur) { (keysPref[track().id] === "rhodes" ? rhodesNote : pianoNote)(midi, t0, vel, dur); }
-function switchKeys() {
-  keysPref[track().id] = keysPref[track().id] === "rhodes" ? "piano" : "rhodes";
-  try { localStorage.setItem("zerohunt_keys", JSON.stringify(keysPref)); } catch (_) {}
-  if (audio()) { const c = track().timeline[0]; pianoChord(c.lh, actx.currentTime + 0.02, 0.45, 0.9); }   // audition
-}
+function keyNote(midi, t0, vel, dur) { (track().keys === "rhodes" ? rhodesNote : pianoNote)(midi, t0, vel, dur); }
 function pianoChord(notes, t0, vel, dur, roll = 0.006) {
   notes.slice().sort((a, b) => a - b).forEach((m, i) => keyNote(m, t0 + i * roll + Math.random() * 0.003, Math.max(0.05, vel + (Math.random() - 0.5) * 0.08), dur));
 }
 function epiano(midi, t0, vol = 0.06, dur = 0.6) { pianoNote(midi, t0, Math.min(0.9, vol * 7), dur); }   // UI blips
 function upright(midi, t0, dur, vel = 0.75) {
   const a = actx; if (!a) return;
-  const f = hz(midi), peak = 0.13 * vel;
+  const f = hz(midi), peak = 0.19 * vel;
   const lp = a.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.9;
-  lp.frequency.setValueAtTime(700 + 600 * vel, t0); lp.frequency.exponentialRampToValueAtTime(240, t0 + 0.2);
+  lp.frequency.setValueAtTime(1300 + 900 * vel, t0); lp.frequency.exponentialRampToValueAtTime(460, t0 + 0.25);
   const g = a.createGain();
   g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 0.014);
   g.gain.setTargetAtTime(peak * 0.5, t0 + 0.016, 0.08);
@@ -290,9 +280,10 @@ function upright(midi, t0, dur, vel = 0.75) {
   o1.frequency.setValueAtTime(f * 1.012, t0); o1.frequency.exponentialRampToValueAtTime(f, t0 + 0.05);
   const o2 = a.createOscillator(); o2.type = "sine"; o2.frequency.value = f;
   const body = a.createGain(); body.gain.value = 0.9;
-  o1.connect(lp); o2.connect(body).connect(lp); lp.connect(g); g.connect(musicBus);
+  const o3 = a.createOscillator(); o3.type = "sine"; o3.frequency.value = f * 2; const h2 = a.createGain(); h2.gain.value = 0.5;   // 2nd harmonic: the bit laptops can play
+  o1.connect(lp); o2.connect(body).connect(lp); o3.connect(h2).connect(lp); lp.connect(g); g.connect(musicBus);
   const v = a.createGain(); v.gain.value = 0.25; g.connect(v).connect(verbIn);
-  o1.start(t0); o2.start(t0); o1.stop(t0 + dur + 0.3); o2.stop(t0 + dur + 0.3);
+  [o1, o2, o3].forEach(o => { o.start(t0); o.stop(t0 + dur + 0.3); });
   noiseBurst(t0, 0.025, 0.02 * vel, "bandpass", f * 5, 1.2, musicBus);    // finger pluck
 }
 // ride: a darker noise wash (band-limited, slow decay) with a soft inharmonic bell on the stick
@@ -319,12 +310,6 @@ function feather(t0) { osc("sine", 58, t0, 0.12, 0.022, { slide: 45, dest: music
 const pcOf = (m) => ((m % 12) + 12) % 12;
 function rng(seed) { return () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function poolNotes(pcs, lo, hi) { const out = []; for (let m = lo; m <= hi; m++) if (pcs.includes(pcOf(m))) out.push(m); return out; }
-// So What voicing (three 4ths with a 3rd on top), built down diatonically from `top`
-function soWhat(top, scale) {
-  const deg = poolNotes(scale, 24, 108), i = deg.indexOf(top);
-  if (i < 0) return [top];
-  return [i, i - 2, i - 5, i - 8, i - 11].map(k => deg[Math.max(0, k)]);
-}
 const BASS_LO = 31, BASS_HI = 50;       // G1 .. D3
 function placePc(pc, near) { let best = null; for (let m = BASS_LO; m <= BASS_HI; m++) if (pcOf(m) === pc && (best === null || Math.abs(m - near) < Math.abs(best - near))) best = m; return best; }
 function scaleStep(m, scale, dir) { for (let k = 1; k <= 3; k++) { const c = m + dir * k; if (scale.includes(pcOf(c))) return c; } return m + dir * 2; }
@@ -377,22 +362,14 @@ const BL = {
   Am:  ch_("Am9", 9, [55, 59, 60, 64], [9, 0, 4, 7, 11], mode(9, DORIAN)),
   Ca:  ch_("C7alt", 0, [52, 56, 58, 63], [0, 4, 10, 1, 3, 8], mode(0, ALT)),
 };
-// MODAL: 16 bars D dorian, 8 bars Eb dorian, 8 bars D dorian; So What voicings
-const MD = {
-  D:  ch_("Dm11", 2, [52, 57, 62, 67, 71], mode(2, DORIAN), mode(2, DORIAN)),
-  Eb: ch_("Ebm11", 3, [53, 58, 63, 68, 72], mode(3, DORIAN), mode(3, DORIAN)),
-};
 const TRACKS = [
-  { id: "swing", name: "SWING", bpm: 138, swing: 0.66, style: "tonal", seed: 11,
+  { id: "swing", name: "SWING", bpm: 138, swing: 0.66, keys: "rhodes", seed: 11,
     form: [[SW.C, 4], [SW.A, 4], [SW.Dm, 4], [SW.G, 4], [SW.Em, 4], [SW.A, 4], [SW.Dm, 4], [SW.G, 4]],
     finale: [[SW.Dm, 79], [SW.G, 77], [SW.C, 76], [SW.C, 86]] },
-  { id: "blues", name: "BLUES", bpm: 120, swing: 0.67, style: "tonal", seed: 23,
+  { id: "blues", name: "BLUES", bpm: 120, swing: 0.67, keys: "piano", seed: 23,
     form: [[BL.F, 4], [BL.Bb, 4], [BL.F, 4], [BL.Cm, 2], [BL.F, 2], [BL.Bb, 4], [BL.Bo, 4], [BL.F, 4], [BL.Da, 4],
            [BL.Gm, 4], [BL.C, 4], [BL.Am, 2], [BL.Da, 2], [BL.Gm, 2], [BL.Ca, 2]],
     finale: [[BL.Gm, 77], [BL.Ca, 75], [BL.F, 74], [BL.F, 81]] },
-  { id: "modal", name: "MODAL", bpm: 136, swing: 0.64, style: "modal", seed: 37,
-    form: [[MD.D, 64], [MD.Eb, 32], [MD.D, 32]],
-    finale: [[MD.D, 81], [MD.D, 79], [MD.D, 77], [MD.D, 74]] },
 ];
 TRACKS.forEach(tr => { tr.timeline = []; tr.form.forEach(([c, n]) => { for (let i = 0; i < n; i++) tr.timeline.push(c); }); tr.walk = buildWalk(tr); });
 let trackIdx = 0;
@@ -403,15 +380,6 @@ const track = () => TRACKS[trackIdx];
 let catchNote = 0, lastPlayerComp = -1e9;
 function contour(i, steps = 9) { const p = 2 * (steps - 1), k = ((i % p) + p) % p; return (k < steps ? k : p - k) / (steps - 1); }
 function compChord(ch, top, t, vel, dur, rating, combo, tr) {
-  if (tr.style === "modal") {
-    // sparse, sustained modal comping: a So What voicing under the melody; catches that follow within
-    // a beat answer with just the melody note so the phrase breathes over the slow harmony
-    if (t - lastPlayerComp < 60 / tr.bpm * 1.05) { keyNote(top, t, vel * 0.8, dur * 1.4); return; }
-    if (rating >= 2) { const deg = poolNotes(ch.scale, 24, 108), up = deg[deg.indexOf(top) + 1] || top;
-      pianoChord(soWhat(up, ch.scale), t - (60 / tr.bpm) * (1 - tr.swing), vel * 0.55, 0.2, 0.004); }   // one slide from a step above, on the beat
-    pianoChord(soWhat(top, ch.scale), t, vel, dur * 1.8, 0.008);
-    return;
-  }
   // tonal: rootless LH + Garland right hand (melody, octave doubling, block-chord fill)
   const rh = [top];
   if (rating >= 1) rh.push(top - 12);
@@ -425,7 +393,7 @@ const sfx = {
     if (!audio()) return;
     const tr = track(), t = Math.max(actx.currentTime, at || actx.currentTime);
     const ch = chordAt(t + 0.5 * spb());                     // an "and" anticipates the next beat's chord
-    const pool = poolNotes(tr.style === "modal" ? ch.scale : ch.pcs, 72, 86);
+    const pool = poolNotes(ch.pcs, 72, 86);
     const top = pool[Math.round(contour(catchNote++) * (pool.length - 1))];
     compChord(ch, top, t, 0.42 + 0.08 * rating, 0.38 + 0.18 * rating, rating, combo, tr);
     lastPlayerComp = t;
@@ -464,10 +432,7 @@ function scheduleBeat() {
     const pat = COMP(tr.swing)[Math.floor(compRng() * 10)];
     pat.forEach(off => {
       const at = t + off * sp, chordThen = tr.timeline[(n + Math.ceil(off - 1e-6)) % tr.timeline.length];   // anticipations take the next chord
-      if (tr.style === "modal") {
-        const pool = poolNotes(chordThen.scale, 72, 81), top = pool[Math.floor(compRng() * pool.length)];
-        pianoChord(soWhat(top, chordThen.scale), at, 0.26, 0.22, 0.004);
-      } else pianoChord(chordThen.lh, at, 0.24 + compRng() * 0.06, 0.2 + compRng() * 0.15, 0.006);
+      pianoChord(chordThen.lh, at, 0.24 + compRng() * 0.06, 0.2 + compRng() * 0.15, 0.006);
     });
   }
   nextBeat += sp; beatIndex++;
@@ -493,8 +458,7 @@ function switchTrack(d) {
 }
 function musicStop() { musicOn = false; clearInterval(musicTimer); }
 // offline render of a track with simulated catches (used to audition the band without a browser)
-async function renderDemo(id, secs = 16, catchEvery = 1.4, keys = null) {
-  const keepKeys = Object.assign({}, keysPref); if (keys) keysPref[id] = keys;
+async function renderDemo(id, secs = 16, catchEvery = 1.4) {
   const keep = { actx, master, musicBus, rhodesBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng };
   const off = new OfflineAudioContext(2, Math.floor(44100 * secs), 44100);
   buildGraph(off); trackIdx = TRACKS.findIndex(tr => tr.id === id); musicOn = true; musicT0 = nextBeat = 0.05; beatIndex = 0; catchNote = 0; lastPlayerComp = -1e9; compRng = rng(99);
@@ -504,7 +468,7 @@ async function renderDemo(id, secs = 16, catchEvery = 1.4, keys = null) {
     const beatStart = nextBeat; scheduleBeat();
     catches.filter(c => c >= beatStart - 1e-9 && c < nextBeat).forEach(c => { combo++; const rating = r() < 0.3 ? 2 : r() < 0.6 ? 1 : 0; sfx.catchChime(rating, combo, nextOffbeat(c + 0.32)); });
   }
-  const buf = await off.startRendering(); keysPref = keepKeys;
+  const buf = await off.startRendering();
   Object.assign(window, {}); ({ actx, master, musicBus, rhodesBus, verbIn, pianoWave, musicOn, musicT0, nextBeat, beatIndex, trackIdx, catchNote, lastPlayerComp, compRng } = keep);
   // 16-bit WAV, base64
   const L = buf.getChannelData(0), R = buf.getChannelData(1), n = L.length, bytes = new DataView(new ArrayBuffer(44 + n * 4));
@@ -571,7 +535,6 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (phase === "title" && (e.code === "ArrowLeft" || e.code === "ArrowRight")) { e.preventDefault(); switchTrack(e.code === "ArrowLeft" ? -1 : 1); return; }
-  if (phase === "title" && (e.code === "ArrowUp" || e.code === "ArrowDown")) { e.preventDefault(); switchKeys(); return; }
   if (KEYMAP[e.code]) { e.preventDefault(); const k = KEYMAP[e.code]; if (k === "up" && !keys.up && phase === "play") sfx.boost(); keys[k] = true; }
   if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); if (phase === "title" || (phase === "end" && endStage === "board")) startGame(); else if (phase === "paused") resume(); }
   if (e.code === "KeyP" || e.code === "Escape") { if (phase === "play") pause(); else if (phase === "paused") resume(); }
@@ -1051,8 +1014,7 @@ function drawMusicPicker(t, y) {
     buttons.push({ id: id + "R", x: x + w - 42, y: yy, w: 40, h: 36, act: onR });
   };
   row(y, "MUSIC", track().name, "", () => switchTrack(-1), () => switchTrack(1), "trk");
-  row(y + 42, "KEYS", keysName(), "", switchKeys, switchKeys, "keys");
-  txt("<-/-> MUSIC   UP/DOWN KEYS   (PREVIEWS)", PF_W / 2, y + 86, 7, COL.grey, "center");
+  txt("<-/-> TO CHANGE AND PREVIEW", PF_W / 2, y + 46, 7, COL.grey, "center");
 }
 function arrowKeySmall(x, y, dir) {
   ctx.fillStyle = COL.pink; const c = x + 12, m = y + 12, d = dir === "left" ? -1 : 1;
